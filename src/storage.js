@@ -7,10 +7,21 @@ import netlifyIdentity from "netlify-identity-widget";
 export const STORE_KEY = "planner-data-v1";
 
 export function initIdentity(onChange) {
-  netlifyIdentity.on("login", (u) => { onChange(u); netlifyIdentity.close(); });
+  let settled = false;
+  const settle = (u) => { settled = true; onChange(u); };
+  netlifyIdentity.on("login", (u) => { settle(u); netlifyIdentity.close(); });
   netlifyIdentity.on("logout", () => onChange(null));
-  netlifyIdentity.on("init", (u) => onChange(u || null));
-  netlifyIdentity.init();
+  netlifyIdentity.on("init", (u) => settle(u || null));
+  netlifyIdentity.on("error", () => { if (!settled) settle(null); });
+  try {
+    netlifyIdentity.init();
+  } catch {
+    settle(null);
+  }
+  /* If Identity can't reach its backend (not yet enabled, offline, blocked),
+     the "init" event may never fire — don't hang the app on the loading
+     screen; fall back to signed-out (localStorage) mode. */
+  setTimeout(() => { if (!settled) settle(netlifyIdentity.currentUser() || null); }, 2500);
 }
 export const openLogin = () => netlifyIdentity.open();
 export const doLogout = () => netlifyIdentity.logout();

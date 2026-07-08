@@ -6,10 +6,14 @@ import {
   addDaysKey, dowOfKey, diffDaysKey,
   wallToUtc, utcToWall, timeZoneList, tzLabel,
 } from "./time.js";
-import { expandOccurrences, scheduleTasks, windowFor } from "./scheduler.js";
+import { expandOccurrences, scheduleTasks, windowFor, layoutDay, effectivePriority } from "./scheduler.js";
 import { initIdentity, openLogin, doLogout, loadData, saveData, STORE_KEY } from "./storage.js";
+import { HOLIDAY_CALENDARS, calByCode, guessCountry, fetchHolidays, yearsForRange } from "./holidays.js";
 
-const HOUR_H = 48;
+const HOUR_H_BASE = 48;
+const HOUR_H_MIN = 30;
+const HOUR_H_MAX = 160;
+const AXIS_W = 56;
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
 /* ---------- theme ---------- */
@@ -57,6 +61,9 @@ function migrate(d) {
   }
   out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, ...t }));
   out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, exceptions: [], location: null, ...e }));
+  out.holidayCals = d.holidayCals || [];
+  out.holidayCache = d.holidayCache || {};
+  out.country = d.country || guessCountry();
   return out;
 }
 
@@ -234,10 +241,13 @@ function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDelet
   const commit = () => {
     if (!title.trim()) return;
     if (itemType === "event") {
+      /* keep the timed start/end even while all-day, so toggling back
+         restores the original hours instead of snapping to 00:00-24:00 */
+      const timedStart = start, timedEnd = Math.max(end, start + 15);
       onSaveEvent({
         exceptions: [], createdAt: Date.now(), ...draft,
         id: draft.id || uid(), title: title.trim(), date, allDay,
-        start: allDay ? 0 : start, end: allDay ? 1440 : Math.max(end, start + 15),
+        start: timedStart, end: timedEnd,
         tz, color, location, repeat,
         repeatUntil: repeat !== "none" && repeatUntil ? repeatUntil : null,
       });
@@ -488,27 +498,45 @@ function CategoriesModal({ categories, onSave, onClose }) {
 }
 
 /* ---------- calendar blocks (hoisted so re-renders never remount the grid) ---------- */
-function EventBlock({ occ, dragPreview, beginDrag, openEvent, openMaps }) {
+function blockGeom(lay, hourH, start, end) {
+  const clippedEnd = Math.min(end, 1440);
+  const base = { top: (start / 60) * hourH, height: Math.max(((clippedEnd - start) / 60) * hourH - 2, 16) };
+  if (!lay || lay.mode === "full") return { ...base, left: 2, right: 4, indent: 0 };
+  if (lay.mode === "split") {
+    const gapPct = 100 / lay.cols;
+    return { ...base, leftPct: lay.col * gapPct, widthPct: gapPct, split: true };
+  }
+  /* indent: bodies overlap but shift each column right so borders don't stack */
+  return { ...base, left: 2 + lay.col * 10, right: 4, indent: lay.col };
+}
+function geomStyle(g) {
+  if (g.split) return { top: g.top, height: g.height, left: `calc(${g.leftPct}% + 1px)`, width: `calc(${g.widthPct}% - 3px)` };
+  return { top: g.top, height: g.height, left: g.left, right: g.right };
+}
+
+function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMaps }) {
   const T = useT();
   if (dragPreview && dragPreview.key === occ.renderKey) return null;
   const c = colorSet(occ.ev.color, T.mode);
   const start = occ.dispStart;
   const end = Math.min(occ.dispEnd, 1440);
+  const g = blockGeom(lay, hourH, start, end);
+  const compact = g.height < 34;
   return (
-    <div className="absolute left-0.5 right-1 rounded-lg overflow-hidden cursor-grab active:cursor-grabbing select-none group/ev"
+    <div className="absolute rounded-lg overflow-hidden cursor-grab active:cursor-grabbing select-none group/ev"
       onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "move")}
       onClick={(e) => { e.stopPropagation(); openEvent(occ); }}
-      style={{ top: (start / 60) * HOUR_H, height: Math.max(((end - start) / 60) * HOUR_H - 2, 18), background: c.bg, borderLeft: `3px solid ${c.border}`, zIndex: 2, touchAction: "none" }}>
+      style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px solid ${c.border}`, zIndex: lay ? lay.z : 2, touchAction: "none" }}>
       <div className="px-1.5 py-0.5 pointer-events-none">
-        <div className="text-xs font-semibold truncate" style={{ color: c.text }}>{occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}</div>
-        {end - start >= 40 && (
+        <div className="text-xs font-semibold truncate" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>{occ.ev.repeat && occ.ev.repeat !== "none" ? "\u21bb " : ""}{occ.ev.title}</div>
+        {g.height >= 40 && (
           <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>
-            {toAmPm(start)} – {toAmPm(occ.dispEnd % 1440)}{occ.dispEnd > 1440 ? " ⁺¹" : ""}{occ.ev.tz !== deviceTz ? ` · ${tzLabel(occ.ev.tz, occ.startUtc)}` : ""}
+            {toAmPm(start)} \u2013 {toAmPm(occ.dispEnd % 1440)}{occ.dispEnd > 1440 ? " \u207a\u00b9" : ""}{occ.ev.tz !== deviceTz ? ` \u00b7 ${tzLabel(occ.ev.tz, occ.startUtc)}` : ""}
           </div>
         )}
-        {end - start >= 64 && occ.ev.location && (
+        {g.height >= 64 && occ.ev.location && (
           <div className="text-[10px] truncate pointer-events-auto cursor-pointer" style={{ color: c.text, opacity: 0.7 }}
-            onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openMaps(occ.ev.location); }}>📍 {occ.ev.location.name}</div>
+            onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openMaps(occ.ev.location); }}>\ud83d\udccd {occ.ev.location.name}</div>
         )}
       </div>
       <div className="absolute left-0 right-0 top-0 h-2 opacity-0 group-hover/ev:opacity-100 cursor-row-resize flex justify-center"
@@ -523,29 +551,29 @@ function EventBlock({ occ, dragPreview, beginDrag, openEvent, openMaps }) {
   );
 }
 
-function TaskBlock({ item, dragPreview, beginDrag, openTask, toggleTask }) {
+function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleTask }) {
   const T = useT();
   const t = item.task;
   if (!item.done && dragPreview && dragPreview.key === "task_" + t.id) return null;
-  const p = prioSet(t.priority, T.mode);
+  const p = prioSet(item.effPriority || t.priority, T.mode);
   const done = !!item.done;
   const c = done ? colorSet("green", T.mode) : p;
   const overdue = !done && ((t.deadline && item.date > t.deadline) || item.overdue);
+  const g = blockGeom(lay, hourH, item.start, item.end);
+  const compact = g.height < 34;
   return (
-    <div className={`absolute left-0.5 right-1 rounded-lg px-1.5 py-0.5 overflow-hidden select-none group/tk ${done ? "" : "cursor-grab active:cursor-grabbing"}`}
+    <div className={`absolute rounded-lg overflow-hidden select-none group/tk ${done ? "" : "cursor-grab active:cursor-grabbing"}`}
       onPointerDown={(e) => { if (!done) beginDrag(e, { type: "task", item }, "move"); }}
       onClick={(e) => { e.stopPropagation(); openTask(t); }}
-      style={{ top: (item.start / 60) * HOUR_H, height: Math.max(((item.end - item.start) / 60) * HOUR_H - 2, 18), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, zIndex: 2, opacity: done ? 0.65 : 1, touchAction: done ? "auto" : "none" }}
-      title={done ? "Completed" : item.pinned ? "Pinned time — drag to move" : "Auto-scheduled — drag to pin a time"}>
-      <div className="flex items-start gap-1">
+      style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, zIndex: lay ? lay.z : 2, opacity: done ? 0.6 : 1, touchAction: done ? "auto" : "none" }}
+      title={done ? "Completed" : item.pinned ? "Pinned time \u2014 drag to move" : "Auto-scheduled \u2014 drag to pin a time"}>
+      <div className="flex items-start gap-1 px-1 py-0.5">
         <div className="mt-0.5"><Check checked={done} onToggle={() => toggleTask(t.id)} color={c.border} /></div>
         <div className="min-w-0 pointer-events-none">
-          <div className={`text-xs font-semibold truncate ${done ? "line-through" : ""}`} style={{ color: c.text }}>
-            {!done && item.pinned ? "📌 " : ""}{t.title}
+          <div className={`text-xs font-semibold truncate ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>
+            {!done && item.pinned ? "\ud83d\udccc " : ""}{t.title}
           </div>
-          {item.end - item.start >= 40 && (
-            <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>{toAmPm(item.start)} – {toAmPm(item.end)}{overdue ? " · overdue" : ""}</div>
-          )}
+          {g.height >= 40 && <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>{toAmPm(item.start)} \u2013 {toAmPm(item.end)}{overdue ? " \u00b7 overdue" : ""}</div>}
         </div>
       </div>
       {!done && (
@@ -558,27 +586,28 @@ function TaskBlock({ item, dragPreview, beginDrag, openTask, toggleTask }) {
   );
 }
 
-function GhostBlock({ preview }) {
+function GhostBlock({ preview, hourH }) {
   const T = useT();
   const start = preview.dispStart;
   const end = Math.min(preview.dispEnd, 1440);
   return (
     <div className="absolute left-0.5 right-1 rounded-lg px-1.5 py-0.5 overflow-hidden pointer-events-none"
-      style={{ top: (start / 60) * HOUR_H, height: Math.max(((end - start) / 60) * HOUR_H - 2, 18), background: preview.cset.bg, borderLeft: `3px ${preview.dashed ? "dashed" : "solid"} ${preview.cset.border}`, zIndex: 6, boxShadow: T.shadow }}>
+      style={{ top: (start / 60) * hourH, height: Math.max(((end - start) / 60) * hourH - 2, 16), background: preview.cset.bg, borderLeft: `3px ${preview.dashed ? "dashed" : "solid"} ${preview.cset.border}`, zIndex: 20, boxShadow: T.shadow }}>
       <div className="text-xs font-semibold truncate" style={{ color: preview.cset.text }}>{preview.title}</div>
-      <div className="text-[10px]" style={{ color: preview.cset.text, opacity: 0.75 }}>{toAmPm(start)} – {toAmPm(preview.dispEnd % 1440)}</div>
+      <div className="text-[10px]" style={{ color: preview.cset.text, opacity: 0.75 }}>{toAmPm(start)} \u2013 {toAmPm(preview.dispEnd % 1440)}</div>
     </div>
   );
 }
 
 /* ---------- time grid (week/day) ---------- */
-function TimeGrid({ days, now, nowMin, allDayByDay, timedByDay, tasksByDay, unionWindows, scrollRef, gridBodyRef, dragPreview, createPreview, beginDrag, beginCreate, openEvent, openTask, toggleTask, openMaps }) {
+function TimeGrid({ days, now, nowMin, hourH, allDayByDay, timedByDay, tasksByDay, layoutFor, unionWindows, scrollRef, gridBodyRef, gutter, dragPreview, createPreview, beginDrag, beginCreate, onGridPointerDown, openEvent, openTask, toggleTask, openMaps, transition }) {
   const T = useT();
+  const nowTop = (nowMin / 60) * hourH;
   return (
     <div className="flex-1 flex flex-col min-h-0">
       <div className="border-b" style={{ borderColor: T.border }}>
-        <div className="flex">
-          <div style={{ width: 52 }} />
+        <div className="flex" style={{ paddingRight: gutter }}>
+          <div style={{ width: AXIS_W }} />
           {days.map((d) => {
             const isToday = sameDay(d, now);
             return (
@@ -590,15 +619,15 @@ function TimeGrid({ days, now, nowMin, allDayByDay, timedByDay, tasksByDay, unio
             );
           })}
         </div>
-        <div className="flex" style={{ minHeight: 22 }}>
-          <div style={{ width: 52 }} className="text-[9px] text-right pr-1.5 pt-0.5"><span style={{ color: T.faint }}>all-day</span></div>
+        <div className="flex" style={{ minHeight: 22, paddingRight: gutter }}>
+          <div style={{ width: AXIS_W }} className="text-[9px] text-right pr-1.5 pt-0.5"><span style={{ color: T.faint }}>all-day</span></div>
           {days.map((d) => {
             const key = dateKey(d);
             return (
-              <div key={key} className="flex-1 px-0.5 pb-1 flex flex-col gap-0.5 border-l" style={{ borderColor: T.gridLine }}>
+              <div key={key} className="flex-1 px-0.5 pb-1 flex flex-col gap-0.5 border-l overflow-hidden" style={{ borderColor: T.gridLine }}>
                 {(allDayByDay[key] || []).map((o) => (
                   <button key={o.renderKey} onClick={() => openEvent(o)} className="rounded px-1.5 text-left text-[10px] font-semibold truncate text-white"
-                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.title}</button>
+                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.holiday ? "\ud83c\udf8c " : ""}{o.ev.title}</button>
                 ))}
               </div>
             );
@@ -606,49 +635,51 @@ function TimeGrid({ days, now, nowMin, allDayByDay, timedByDay, tasksByDay, unio
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto relative">
-        <div ref={gridBodyRef} className="flex relative" style={{ height: 24 * HOUR_H }}>
-          <div style={{ width: 52 }} className="relative flex-shrink-0">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden relative" style={{ overscrollBehavior: "contain" }}>
+        <div ref={gridBodyRef} className={`flex relative ${transition ? "rl-fade" : ""}`} style={{ height: 24 * hourH }} onPointerDown={onGridPointerDown}>
+          <div style={{ width: AXIS_W }} className="relative flex-shrink-0">
             {Array.from({ length: 23 }, (_, i) => i + 1).map((h) => (
-              <div key={h} className="absolute right-1.5 text-[10px]" style={{ top: h * HOUR_H - 6, color: T.dim }}>{toAmPm(h * 60)}</div>
+              <div key={h} className="absolute right-1.5 text-[10px]" style={{ top: h * hourH - 6, color: T.dim }}>{hourH < 40 && h % 2 ? "" : toAmPm(h * 60)}</div>
             ))}
           </div>
           {days.map((d) => {
             const key = dateKey(d);
             const win = unionWindows(key);
+            const laid = layoutFor(key);
             return (
               <div key={key} className="flex-1 relative border-l" style={{ borderColor: T.gridLine }}>
                 {Array.from({ length: 24 }, (_, h) => (
-                  <div key={h} className="absolute left-0 right-0 border-t" style={{ top: h * HOUR_H, borderColor: T.gridLine }} />
+                  <div key={h} className="absolute left-0 right-0 border-t" style={{ top: h * hourH, borderColor: T.gridLine }} />
                 ))}
                 {win ? (
                   <>
-                    <div className="absolute left-0 right-0" style={{ top: 0, height: (win.start / 60) * HOUR_H, background: T.shade }} />
-                    <div className="absolute left-0 right-0" style={{ top: (win.end / 60) * HOUR_H, bottom: 0, background: T.shade }} />
+                    <div className="absolute left-0 right-0" style={{ top: 0, height: (win.start / 60) * hourH, background: T.shade }} />
+                    <div className="absolute left-0 right-0" style={{ top: (win.end / 60) * hourH, bottom: 0, background: T.shade }} />
                   </>
                 ) : <div className="absolute inset-0" style={{ background: T.shade }} />}
                 <div className="absolute inset-0" onPointerDown={(e) => beginCreate(e, key)} />
-                {(timedByDay[key] || []).map((o) => (
-                  <EventBlock key={o.renderKey} occ={o} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} />
+                {laid.events.map(({ occ, lay }) => (
+                  <EventBlock key={occ.renderKey} occ={occ} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} />
                 ))}
-                {(tasksByDay[key] || []).map((it) => (
-                  <TaskBlock key={"task_" + it.task.id + (it.done ? "_done" : "")} item={it} dragPreview={dragPreview} beginDrag={beginDrag} openTask={openTask} toggleTask={toggleTask} />
+                {laid.tasks.map(({ item, lay }) => (
+                  <TaskBlock key={"task_" + item.task.id + (item.done ? "_done" : "")} item={item} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openTask={openTask} toggleTask={toggleTask} />
                 ))}
-                {dragPreview && dragPreview.dispDate === key && <GhostBlock preview={dragPreview} />}
+                {dragPreview && dragPreview.dispDate === key && <GhostBlock preview={dragPreview} hourH={hourH} />}
                 {createPreview && createPreview.date === key && (
-                  <div className="absolute left-0.5 right-1 rounded-lg pointer-events-none" style={{ top: (createPreview.start / 60) * HOUR_H, height: ((createPreview.end - createPreview.start) / 60) * HOUR_H, background: colorSet("blue", T.mode).bg, border: `1.5px dashed ${T.accent}`, zIndex: 5 }}>
-                    <div className="text-[10px] px-1.5 pt-0.5 font-medium" style={{ color: colorSet("blue", T.mode).text }}>{toAmPm(createPreview.start)} – {toAmPm(createPreview.end)}</div>
+                  <div className="absolute left-0.5 right-1 rounded-lg pointer-events-none" style={{ top: (createPreview.start / 60) * hourH, height: ((createPreview.end - createPreview.start) / 60) * hourH, background: colorSet("blue", T.mode).bg, border: `1.5px dashed ${T.accent}`, zIndex: 15 }}>
+                    <div className="text-[10px] px-1.5 pt-0.5 font-medium" style={{ color: colorSet("blue", T.mode).text }}>{toAmPm(createPreview.start)} \u2013 {toAmPm(createPreview.end)}</div>
                   </div>
                 )}
-                {sameDay(d, now) && (
-                  <div className="absolute left-0 right-0 flex items-center pointer-events-none" style={{ top: (nowMin / 60) * HOUR_H, zIndex: 4 }}>
-                    <div className="rounded-full" style={{ width: 7, height: 7, background: T.danger, marginLeft: -3 }} />
-                    <div className="flex-1" style={{ height: 1.5, background: T.danger }} />
-                  </div>
-                )}
+                {/* faint now-line across every day */}
+                <div className="absolute left-0 right-0 pointer-events-none" style={{ top: nowTop, height: 1, background: T.danger, opacity: sameDay(d, now) ? 0.9 : 0.18, zIndex: 4 }} />
+                {sameDay(d, now) && <div className="absolute rounded-full pointer-events-none" style={{ top: nowTop - 3, left: -3, width: 7, height: 7, background: T.danger, zIndex: 5 }} />}
               </div>
             );
           })}
+          {/* current-time pill on the axis */}
+          <div className="absolute pointer-events-none flex items-center justify-end" style={{ top: nowTop - 8, left: 0, width: AXIS_W - 3, zIndex: 6 }}>
+            <span className="rounded-full text-[9px] font-bold text-white px-1.5" style={{ background: T.danger, lineHeight: "16px" }}>{toAmPm(nowMin)}</span>
+          </div>
         </div>
       </div>
     </div>
@@ -696,6 +727,41 @@ function MonthGrid({ anchor, now, allDayByDay, timedByDay, tasksByDay, onOpenDay
   );
 }
 
+/* ---------- holidays picker ---------- */
+function HolidaysModal({ selected, country, onSave, onClose }) {
+  const T = useT();
+  const [sel, setSel] = useState(selected);
+  const [ctry, setCtry] = useState(country);
+  const toggle = (code) => setSel((s) => (s.includes(code) ? s.filter((x) => x !== code) : [...s, code]));
+  return (
+    <Modal title="Holiday Calendars" onClose={onClose} wide
+      footer={<button onClick={() => onSave(sel, ctry)} className="px-4 py-1.5 rounded-lg text-sm font-semibold text-white" style={{ background: T.accent }}>Save</button>}>
+      <p className="text-xs mb-3" style={{ color: T.dim }}>
+        Add public holidays as all-day events. Your country sets the default time zone for new events too.
+      </p>
+      <Row label="Country">
+        <select value={ctry} onChange={(e) => setCtry(e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)}>
+          {HOLIDAY_CALENDARS.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+        </select>
+      </Row>
+      <div className="text-[10px] uppercase tracking-wide mt-3 mb-1.5" style={{ color: T.dim }}>Show holidays from</div>
+      <div className="grid grid-cols-2 gap-1.5">
+        {HOLIDAY_CALENDARS.map((c) => {
+          const on = sel.includes(c.code);
+          return (
+            <button key={c.code} onClick={() => toggle(c.code)} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-left"
+              style={{ background: on ? colorSet(c.color, T.mode).bg : T.surface2, color: on ? colorSet(c.color, T.mode).text : T.dim, border: `1px solid ${on ? colorSet(c.color, T.mode).border : "transparent"}` }}>
+              <span className="rounded-full flex-shrink-0" style={{ width: 8, height: 8, background: ACCENTS[c.color] }} />
+              <span className="flex-1 truncate">{c.name}</span>
+              {on && <span style={{ color: colorSet(c.color, T.mode).border }}>✓</span>}
+            </button>
+          );
+        })}
+      </div>
+    </Modal>
+  );
+}
+
 /* ==================================================================== */
 export default function Planner() {
   const [mode, setMode] = useState(() => { try { return localStorage.getItem("rollover-theme") || "dark"; } catch { return "dark"; } });
@@ -708,23 +774,45 @@ export default function Planner() {
   const [tasks, setTasks] = useState([]);
   const [events, setEvents] = useState([]);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
+  const [holidayCals, setHolidayCals] = useState([]);
+  const [holidayCache, setHolidayCache] = useState({});
+  const [country, setCountry] = useState(() => guessCountry());
   const [now, setNow] = useState(new Date());
   const [view, setView] = useState("week");
   const [anchor, setAnchor] = useState(new Date());
   const [itemDraft, setItemDraft] = useState(null);
   const [showCats, setShowCats] = useState(false);
+  const [showHolidays, setShowHolidays] = useState(false);
   const [quickTitle, setQuickTitle] = useState("");
   const [saveState, setSaveState] = useState("idle");
   const [dragPreview, setDragPreview] = useState(null);
   const [createPreview, setCreatePreview] = useState(null);
+  const [hourH, setHourH] = useState(HOUR_H_BASE);
+  const [gutter, setGutter] = useState(0);
+  const [transition, setTransition] = useState(false);
   const scrollRef = useRef(null);
   const gridBodyRef = useRef(null);
   const saveTimer = useRef(null);
   const dragRef = useRef(null);
   const skipNextSave = useRef(true);
+  const gestureRef = useRef(null);
+  const hourHRef = useRef(hourH);
+  hourHRef.current = hourH;
 
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(t); }, []);
   useEffect(() => { initIdentity((u) => { setUser(u); setAuthReady(true); }); }, []);
+
+  /* measure the scrollbar gutter so the all-day header lines up with the grid */
+  useEffect(() => {
+    const measure = () => {
+      const el = scrollRef.current;
+      if (el) setGutter(el.offsetWidth - el.clientWidth);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    const id = setInterval(measure, 1000);
+    return () => { window.removeEventListener("resize", measure); clearInterval(id); };
+  }, [loaded, view]);
 
   useEffect(() => {
     if (!authReady) return;
@@ -736,11 +824,13 @@ export default function Planner() {
         if (d) {
           const m = migrate(d);
           setTasks(m.tasks); setEvents(m.events); setCategories(m.categories);
+          setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
         } else if (user) {
           const raw = localStorage.getItem(STORE_KEY);
           if (raw) {
             const m = migrate(JSON.parse(raw));
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
             saveData(user, m).catch(() => {});
           }
         }
@@ -758,13 +848,13 @@ export default function Planner() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        await saveData(user, { tasks, events, categories });
+        await saveData(user, { tasks, events, categories, holidayCals, holidayCache, country });
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 1500);
       } catch { setSaveState("error"); }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [tasks, events, categories, loaded, user]);
+  }, [tasks, events, categories, holidayCals, holidayCache, country, loaded, user]);
 
   /* land on the current time; only view changes re-scroll */
   useEffect(() => {
@@ -772,12 +862,13 @@ export default function Planner() {
     requestAnimationFrame(() => {
       if (scrollRef.current) {
         const m = new Date();
-        scrollRef.current.scrollTop = Math.max(0, ((m.getHours() * 60 + m.getMinutes()) / 60) * HOUR_H - 150);
+        scrollRef.current.scrollTop = Math.max(0, ((m.getHours() * 60 + m.getMinutes()) / 60) * hourHRef.current - 150);
       }
     });
   }, [view, loaded]);
 
   const nowMin = now.getHours() * 60 + now.getMinutes();
+  const todayKey = dateKey(now);
 
   const range = useMemo(() => {
     if (view === "month") {
@@ -791,7 +882,46 @@ export default function Planner() {
     return { start: dateKey(anchor), end: dateKey(anchor) };
   }, [view, anchor]);
 
-  const occurrences = useMemo(() => expandOccurrences(events, range.start, range.end, deviceTz), [events, range]);
+  /* fetch any holiday years we don't yet have cached for the visible range */
+  useEffect(() => {
+    if (!holidayCals.length) return;
+    const years = yearsForRange(range.start, range.end);
+    const missing = [];
+    for (const code of holidayCals) for (const y of years) if (!holidayCache[`${code}_${y}`]) missing.push([code, y]);
+    if (!missing.length) return;
+    let alive = true;
+    (async () => {
+      const adds = {};
+      for (const [code, y] of missing) {
+        try { adds[`${code}_${y}`] = await fetchHolidays(code, y); }
+        catch { adds[`${code}_${y}`] = []; }
+      }
+      if (alive) setHolidayCache((c) => ({ ...c, ...adds }));
+    })();
+    return () => { alive = false; };
+  }, [holidayCals, range, holidayCache]);
+
+  /* holiday events materialised as all-day events for the visible range */
+  const holidayEvents = useMemo(() => {
+    const out = [];
+    const years = yearsForRange(range.start, range.end);
+    for (const code of holidayCals) {
+      const cal = calByCode(code);
+      for (const y of years) {
+        for (const h of holidayCache[`${code}_${y}`] || []) {
+          if (h.date < range.start || h.date > range.end) continue;
+          out.push({ id: `hol_${code}_${h.date}`, title: h.name, date: h.date, start: 0, end: 1440, allDay: true, tz: cal?.tz || deviceTz, color: cal?.color || "red", repeat: "none", exceptions: [], location: null, holiday: true, holidayCountry: code });
+        }
+      }
+    }
+    return out;
+  }, [holidayCals, holidayCache, range]);
+
+  const occurrences = useMemo(() => {
+    const evOcc = expandOccurrences(events, range.start, range.end, deviceTz);
+    const holOcc = holidayEvents.map((ev) => ({ ev, occDate: ev.date, allDay: true, dispDate: ev.date, renderKey: ev.id }));
+    return [...evOcc, ...holOcc];
+  }, [events, range, holidayEvents]);
   const schedule = useMemo(() => scheduleTasks(tasks, events, categories, now, deviceTz), [tasks, events, categories, now]);
 
   const timedByDay = useMemo(() => {
@@ -812,10 +942,23 @@ export default function Planner() {
         continue;
       }
       const s = schedule[t.id];
-      if (s) (m[s.date] ||= []).push({ task: t, ...s, done: false });
+      if (s) (m[s.date] ||= []).push({ task: t, ...s, done: false, effPriority: effectivePriority(t, todayKey) });
     }
     return m;
-  }, [tasks, schedule]);
+  }, [tasks, schedule, todayKey]);
+
+  /* per-day overlap layout, memoised */
+  const layoutFor = useCallback((key) => {
+    const evs = (timedByDay[key] || []).map((occ) => ({ id: "e_" + occ.renderKey, start: occ.dispStart, end: Math.min(occ.dispEnd, 1440), ref: occ, kind: "event" }));
+    const tks = (tasksByDay[key] || []).map((it) => ({ id: "t_" + it.task.id, start: it.start, end: Math.min(it.end, 1440), ref: it, kind: "task" }));
+    const laid = layoutDay([...evs, ...tks]);
+    const byId = {};
+    for (const l of laid) byId[l.item.id] = l;
+    return {
+      events: evs.map((e) => ({ occ: e.ref, lay: byId[e.id] })),
+      tasks: tks.map((t) => ({ item: t.ref, lay: byId[t.id] })),
+    };
+  }, [timedByDay, tasksByDay]);
 
   /* ---------- mutations ---------- */
   const toggleTask = useCallback((id) => {
@@ -836,9 +979,35 @@ export default function Planner() {
   const deleteSeries = (id) => { setEvents((es) => es.filter((e) => e.id !== id)); setItemDraft(null); };
   const deleteOccurrence = (id, occDate) => { setEvents((es) => es.map((e) => (e.id === id ? { ...e, exceptions: [...(e.exceptions || []), occDate] } : e))); setItemDraft(null); };
 
-  const openEvent = useCallback((occ) => { if (!dragRef.current?.moved) setItemDraft({ ...occ.ev, itemType: "event", occDate: occ.occDate }); }, []);
+  const openEvent = useCallback((occ) => {
+    if (dragRef.current?.moved) return;
+    if (occ.ev.holiday) return; /* holidays are read-only */
+    setItemDraft({ ...occ.ev, itemType: "event", occDate: occ.occDate });
+  }, []);
   const openTask = useCallback((t) => { if (!dragRef.current?.moved) setItemDraft({ ...t, itemType: "task" }); }, []);
   const openMaps = useCallback((loc) => window.open(`https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`, "_blank"), []);
+
+  /* view switch with a short cross-fade/scale */
+  const VIEW_ORDER = ["day", "week", "month"];
+  const changeView = useCallback((v) => {
+    setView((cur) => {
+      if (v === cur) return cur;
+      setTransition(true);
+      setTimeout(() => setTransition(false), 260);
+      return v;
+    });
+  }, []);
+  const zoomView = useCallback((dir) => {
+    /* dir -1 = toward day (in), +1 = toward month (out) */
+    setView((cur) => {
+      const i = VIEW_ORDER.indexOf(cur);
+      const ni = Math.min(VIEW_ORDER.length - 1, Math.max(0, i + dir));
+      if (ni === i) return cur;
+      setTransition(true);
+      setTimeout(() => setTransition(false), 260);
+      return VIEW_ORDER[ni];
+    });
+  }, []);
 
   const days = useMemo(() => {
     if (view === "week") return Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i));
@@ -869,7 +1038,7 @@ export default function Planner() {
       ev.preventDefault();
       if (Math.hypot(dx, dy) > 5) s.moved = true;
       if (!s.moved) return;
-      s.minDelta = Math.round(dy / (HOUR_H / 60) / 15) * 15;
+      s.minDelta = Math.round(dy / (hourHRef.current / 60) / 15) * 15;
       if (s.mode === "move" && gridBodyRef.current && days.length > 1) {
         const colW = (gridBodyRef.current.getBoundingClientRect().width - 52) / days.length;
         s.dayDelta = Math.round(dx / colW);
@@ -942,9 +1111,10 @@ export default function Planner() {
   const beginCreate = useCallback((e, key) => {
     if (e.button !== undefined && e.button !== 0) return;
     if (dragRef.current) return;
+    if (gestureRef.current && gestureRef.current.pts.size >= 1) return; /* a touch gesture owns this */
     const isTouch = e.pointerType === "touch";
     const rect = e.currentTarget.getBoundingClientRect();
-    const yToMin = (clientY) => Math.max(0, Math.min(1440, Math.round(((clientY - rect.top) / HOUR_H) * 60 / 15) * 15));
+    const yToMin = (clientY) => Math.max(0, Math.min(1440, Math.round(((clientY - rect.top) / hourHRef.current) * 60 / 15) * 15));
     const anchorMin = yToMin(e.clientY);
     const st = { create: true, key, anchorMin, x0: e.clientX, y0: e.clientY, active: !isTouch, moved: false, timer: null, last: anchorMin };
     if (isTouch) st.timer = setTimeout(() => { st.active = true; if (navigator.vibrate) navigator.vibrate(15); }, 400);
@@ -996,10 +1166,89 @@ export default function Planner() {
     return { start: Math.min(...wins.map((w) => w.start)), end: Math.max(...wins.map((w) => w.end)) };
   }, [categories]);
 
-  const shift = (dir) => {
-    if (view === "month") { const d = new Date(anchor); d.setMonth(d.getMonth() + dir); setAnchor(d); }
-    else setAnchor(addDays(anchor, dir * (view === "week" ? 7 : 1)));
-  };
+  const shift = useCallback((dir) => {
+    setAnchor((a) => {
+      if (view === "month") { const d = new Date(a); d.setMonth(d.getMonth() + dir); return d; }
+      return addDays(a, dir * (view === "week" ? 7 : 1));
+    });
+  }, [view]);
+
+  /* ---------- multitouch: pinch to zoom (vertical) / switch view (horizontal),
+     plus horizontal swipe to move day-by-day ---------- */
+  const onGridPointerDown = useCallback((e) => {
+    if (e.pointerType !== "touch") return;
+    const g = gestureRef.current || (gestureRef.current = { pts: new Map() });
+    g.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (g.pts.size === 2) {
+      const [a, b] = [...g.pts.values()];
+      g.startDx = Math.abs(a.x - b.x);
+      g.startDy = Math.abs(a.y - b.y);
+      g.startHourH = hourHRef.current;
+      g.axis = null;
+      g.pinching = true;
+      if (dragRef.current) { dragRef.current = null; setCreatePreview(null); setDragPreview(null); } /* cancel single-finger drag/create */
+    } else if (g.pts.size === 1) {
+      g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swiped = false;
+    }
+
+    const move = (ev) => {
+      const pt = g.pts.get(ev.pointerId);
+      if (!pt) return;
+      pt.x = ev.clientX; pt.y = ev.clientY;
+
+      if (g.pinching && g.pts.size === 2) {
+        ev.preventDefault();
+        const [a, b] = [...g.pts.values()];
+        const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
+        if (!g.axis) {
+          const cdx = Math.abs(dx - g.startDx), cdy = Math.abs(dy - g.startDy);
+          if (cdx > 24 || cdy > 24) g.axis = cdy >= cdx ? "v" : "h";
+        }
+        if (g.axis === "v") {
+          const ratio = dy / (g.startDy || 1);
+          setHourH(Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * ratio))));
+        } else if (g.axis === "h" && !g.fired) {
+          const ratio = dx / (g.startDx || 1);
+          if (ratio < 0.6) { g.fired = true; zoomView(-1); }       /* pinch in -> more detail */
+          else if (ratio > 1.6) { g.fired = true; zoomView(1); }   /* spread -> less detail */
+        }
+      } else if (g.pts.size === 1 && !g.pinching) {
+        const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
+        if (!g.swiped && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.6) {
+          g.swiped = true;
+          shift(dx < 0 ? 1 : -1); /* swipe left -> forward */
+        }
+      }
+    };
+    const up = (ev) => {
+      g.pts.delete(ev.pointerId);
+      if (g.pts.size < 2) { g.pinching = false; g.axis = null; g.fired = false; }
+      if (g.pts.size === 0) {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        gestureRef.current = null;
+      }
+    };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
+  }, [zoomView, shift]);
+
+  /* desktop: ctrl/cmd + wheel to zoom the time axis */
+  const onGridWheel = useCallback((e) => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    e.preventDefault();
+    setHourH((h) => Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, h * (e.deltaY < 0 ? 1.1 : 0.9)))));
+  }, []);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.addEventListener("wheel", onGridWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onGridWheel);
+  }, [onGridWheel, loaded, view]);
+
 
   const title = view === "month" ? `${MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}`
     : view === "day" ? `${MONTHS[anchor.getMonth()]} ${anchor.getDate()}, ${anchor.getFullYear()}`
@@ -1020,8 +1269,8 @@ export default function Planner() {
 
   return (
     <ThemeCtx.Provider value={T}>
-      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent}`}</style>
-      <div className="h-screen flex" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode }}>
+      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
+      <div className="h-screen flex select-none" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode }}>
         {/* ---------- sidebar ---------- */}
         <div className="w-72 flex-shrink-0 flex flex-col border-r" style={{ borderColor: T.border, background: T.surface }}>
           <div className="px-4 pt-4 pb-2 flex items-center justify-between">
@@ -1078,6 +1327,7 @@ export default function Planner() {
 
           <div className="px-4 py-3 border-t flex flex-col gap-1.5" style={{ borderColor: T.border }}>
             <button onClick={() => setShowCats(true)} className="text-xs font-medium text-left" style={{ color: T.accent }}>⚙ Hours & categories</button>
+            <button onClick={() => setShowHolidays(true)} className="text-xs font-medium text-left" style={{ color: T.accent }}>🎌 Holiday calendars{holidayCals.length ? ` (${holidayCals.length})` : ""}</button>
             {user ? (
               <div className="flex items-center justify-between">
                 <span className="text-[11px] truncate" style={{ color: T.dim }}>{user.email}</span>
@@ -1093,7 +1343,7 @@ export default function Planner() {
             <h1 className="font-bold text-lg mr-2" style={{ color: T.text }}>{title}</h1>
             <div className="flex rounded-lg overflow-hidden text-xs font-medium" style={{ background: T.surface2 }}>
               {["day", "week", "month"].map((v) => (
-                <button key={v} onClick={() => setView(v)} className="px-3 py-1.5 capitalize"
+                <button key={v} onClick={() => changeView(v)} className="px-3 py-1.5 capitalize"
                   style={{ background: view === v ? (T.mode === "dark" ? "#3a3a3e" : "white") : "transparent", color: view === v ? T.text : T.dim, boxShadow: view === v ? "0 1px 2px rgba(0,0,0,0.15)" : "none", borderRadius: 7, margin: 2 }}>{v}</button>
               ))}
             </div>
@@ -1107,21 +1357,16 @@ export default function Planner() {
           </div>
 
           {view === "month" ? (
-            <MonthGrid anchor={anchor} now={now} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
-              onOpenDay={(d) => { setAnchor(d); setView("day"); }} />
+            <div className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : ""}`}>
+              <MonthGrid anchor={anchor} now={now} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
+                onOpenDay={(d) => { setAnchor(d); changeView("day"); }} />
+            </div>
           ) : (
-            <TimeGrid days={days} now={now} nowMin={nowMin} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
-              unionWindows={unionWindows} scrollRef={scrollRef} gridBodyRef={gridBodyRef} dragPreview={dragPreview} createPreview={createPreview}
-              beginDrag={beginDrag} beginCreate={beginCreate} openEvent={openEvent} openTask={openTask} toggleTask={toggleTask} openMaps={openMaps} />
+            <TimeGrid days={days} now={now} nowMin={nowMin} hourH={hourH} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
+              layoutFor={layoutFor} unionWindows={unionWindows} scrollRef={scrollRef} gridBodyRef={gridBodyRef} gutter={gutter}
+              dragPreview={dragPreview} createPreview={createPreview} beginDrag={beginDrag} beginCreate={beginCreate} onGridPointerDown={onGridPointerDown}
+              openEvent={openEvent} openTask={openTask} toggleTask={toggleTask} openMaps={openMaps} transition={transition} />
           )}
-
-          <div className="px-4 py-1.5 border-t flex items-center gap-3 text-[11px] flex-wrap" style={{ borderColor: T.border, color: T.dim }}>
-            <span>Drag empty space to create · drag blocks to move · edges to resize · long-press on mobile</span>
-            <span className="flex items-center gap-1"><span className="rounded-full" style={{ width: 7, height: 7, background: ACCENTS.red }} />High</span>
-            <span className="flex items-center gap-1"><span className="rounded-full" style={{ width: 7, height: 7, background: ACCENTS.orange }} />Med</span>
-            <span className="flex items-center gap-1"><span className="rounded-full" style={{ width: 7, height: 7, background: ACCENTS.blue }} />Low</span>
-            <span className="flex items-center gap-1"><span style={{ color: T.ok }}>✓</span>done stays visible</span>
-          </div>
         </div>
 
         {itemDraft && (
@@ -1131,6 +1376,7 @@ export default function Planner() {
             onClose={() => setItemDraft(null)} />
         )}
         {showCats && <CategoriesModal categories={categories} onSave={(cs) => { setCategories(cs); setShowCats(false); }} onClose={() => setShowCats(false)} />}
+        {showHolidays && <HolidaysModal selected={holidayCals} country={country} onSave={(sel, c) => { setHolidayCals(sel); setCountry(c); setShowHolidays(false); }} onClose={() => setShowHolidays(false)} />}
       </div>
     </ThemeCtx.Provider>
   );

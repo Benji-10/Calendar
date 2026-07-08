@@ -3,7 +3,19 @@
    absolute time, then projected into the device timezone for display
    and for computing busy periods. */
 
-import { wallToUtc, utcToWall, addDaysKey, dowOfKey, dateKey } from "./time.js";
+import { wallToUtc, utcToWall, addDaysKey, dowOfKey, dateKey, diffDaysKey } from "./time.js";
+
+/* A task's effective priority rises as its deadline nears:
+   <=1 day -> High, <=3 days -> at least Medium. Returns 1..3. */
+export function effectivePriority(task, todayKey) {
+  let p = task.priority || 3;
+  if (task.deadline) {
+    const d = diffDaysKey(task.deadline, todayKey);
+    if (d <= 1) p = 1;
+    else if (d <= 3) p = Math.min(p, 2);
+  }
+  return p;
+}
 
 function matchesRule(ev, k) {
   if (k === ev.date) return true;
@@ -103,7 +115,8 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
 
   /* Pass 2 — priority populates first, then earlier deadline, then age */
   autoQueue.sort((a, b) => {
-    if (a.priority !== b.priority) return a.priority - b.priority;
+    const pa = effectivePriority(a, todayKey), pb = effectivePriority(b, todayKey);
+    if (pa !== pb) return pa - pb;
     const da = a.deadline || "9999-12-31";
     const db = b.deadline || "9999-12-31";
     if (da !== db) return da < db ? -1 : 1;
@@ -140,4 +153,51 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
     }
   }
   return placed;
+}
+
+/* ---- overlap layout ----
+   Given items with {start,end} on one day, assign each a column index and a
+   column count for its overlap cluster. Narrow (side-by-side) only when text
+   would actually collide; otherwise items get a small left indent so their
+   colored borders don't stack, but bodies still use most of the width.
+   Later items sit on top (higher z) so both stay clickable. */
+export function layoutDay(items, minColMinutes = 45) {
+  const sorted = items.slice().sort((a, b) => a.start - b.start || a.end - b.end);
+  const clusters = [];
+  let cur = [];
+  let curEnd = -1;
+  for (const it of sorted) {
+    if (cur.length && it.start >= curEnd) { clusters.push(cur); cur = []; curEnd = -1; }
+    cur.push(it);
+    curEnd = Math.max(curEnd, it.end);
+  }
+  if (cur.length) clusters.push(cur);
+
+  const out = [];
+  for (const cluster of clusters) {
+    /* greedy column packing within the cluster */
+    const cols = [];
+    for (const it of cluster) {
+      let placed = false;
+      for (let ci = 0; ci < cols.length; ci++) {
+        if (cols[ci] <= it.start) { it._col = ci; cols[ci] = it.end; placed = true; break; }
+      }
+      if (!placed) { it._col = cols.length; cols.push(it.end); }
+    }
+    const nCols = cols.length;
+    /* would text collide? only if any item is too short to read side-by-side
+       OR the cluster is dense (3+ columns). Otherwise indent-only. */
+    const tight = nCols >= 3 || cluster.some((it) => it.end - it.start < minColMinutes);
+    for (let i = 0; i < cluster.length; i++) {
+      const it = cluster[i];
+      out.push({
+        item: it,
+        col: it._col,
+        cols: nCols,
+        mode: nCols <= 1 ? "full" : tight ? "split" : "indent",
+        z: 2 + i,
+      });
+    }
+  }
+  return out;
 }

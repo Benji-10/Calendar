@@ -46,3 +46,27 @@ existing local data is pushed up to your account automatically.
   calendar in green so the day's accomplishments remain visible
 - Tasks can be given an explicit time ("Pick a time") with a per-task
   auto-reschedule switch: on = missed tasks roll forward, off = stay put
+
+## Tests
+    npm test
+Runs a Vitest + Testing Library suite that mounts the app, adds a task,
+switches views, and opens the editor — asserting no runtime errors.
+
+## Zoom & gestures
+- Pinch vertically to make the day more detailed (taller hours); pinch/spread
+  horizontally to move between day -> week -> month
+- Swipe left/right (one finger) to move forward/back a day/week/month
+- Desktop: Ctrl/Cmd + scroll wheel zooms the time axis
+- Smooth cross-fade when switching views
+
+## Holidays
+Sidebar -> "Holiday calendars". Pick any of 18 countries; their public
+holidays appear as all-day events (data from the free Nager.Date API,
+cached in your synced data). Your country also sets the default suggestion
+basis. Holiday events are read-only.
+
+## Priorities & deadlines
+High/Medium/Low control colour and scheduling order (High fills free slots
+first). A task's priority automatically escalates as its deadline nears
+(<=3 days -> at least Medium, <=1 day -> High), so urgent work rises to the
+top of the queue on its own.
