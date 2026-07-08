@@ -97,3 +97,17 @@ The error label now tells you which of these it is:
    (the pooler string from the Neon dashboard) -> trigger a redeploy.
 3. 401 — Identity issue. Enable Identity in Site configuration, sign out/in.
 NEVER commit the connection string to the repo — it stays in the env var.
+
+## Task dependencies (processes)
+A task can be set to come "After" another task (editor -> After row). The
+scheduler places prerequisites first and never schedules a dependent before
+its prerequisite's slot ends — so research-flight -> book-train -> book-hotel
+rolls over as a chain, in order, no matter how the earlier steps slip. Done
+prerequisites release the constraint; an unschedulable prerequisite shows the
+dependent as "Waiting on ...". Cycles are prevented in the picker and broken
+safely by the scheduler. Chained tasks show a link icon.
+
+## Mobile gesture model
+One finger scrolls. Hold spawns a draggable event block (release opens the
+editor). Two fingers zoom — smooth, frame-synced, anchored at your fingers.
+The week strip changes days/weeks; month view still swipes between months.

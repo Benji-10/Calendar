@@ -121,45 +121,85 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
     autoQueue.push(t);
   }
 
-  /* Pass 2 — priority populates first, then earlier deadline, then age */
-  autoQueue.sort((a, b) => {
+  /* Pass 2 — dependency-aware auto scheduling.
+     A task with dependsOn cannot start before its prerequisite's scheduled
+     end, so chains like research -> train -> hotel roll over as a unit:
+     the hotel booking never lands before the flight research, no matter
+     how the earlier tasks slip. Prerequisites are placed first (topological
+     order); within the available set, priority (deadline-escalated), then
+     deadline, then age decide. Cycles fall back to ignoring the unresolved
+     link rather than deadlocking. */
+  const byId = {};
+  for (const t of tasks) byId[t.id] = t;
+  const pendingIds = new Set(tasks.filter((x) => !x.done).map((x) => x.id));
+  const depsOf = (t) => (t.dependsOn && pendingIds.has(t.dependsOn) ? [t.dependsOn] : []);
+  const cmpTask = (a, b) => {
     const pa = effectivePriority(a, todayKey), pb = effectivePriority(b, todayKey);
     if (pa !== pb) return pa - pb;
     const da = a.deadline || "9999-12-31";
     const db = b.deadline || "9999-12-31";
     if (da !== db) return da < db ? -1 : 1;
     return a.createdAt - b.createdAt;
-  });
+  };
 
-  for (const t of autoQueue) {
+  const tryPlace = (t, minDate, minMin) => {
     const cat = catById[t.category] || fallbackCat;
-    if (!cat) continue;
+    if (!cat) return false;
     for (let i = 0; i < HORIZON; i++) {
       const k = addDaysKey(todayKey, i);
+      if (minDate && k < minDate) continue;
       const win = windowFor(cat, k);
       if (!win) continue;
       let winStart = win.start;
       const winEnd = win.end;
       if (i === 0) winStart = Math.max(winStart, snapUp(nowMin));
+      if (minDate && k === minDate) winStart = Math.max(winStart, snapUp(minMin));
       if (winStart >= winEnd) continue;
 
       const busy = (busyByDay[k] || []).slice().sort((a, b) => a[0] - b[0]);
       let cursor = winStart;
       let fits = false;
-      for (const [s, e] of busy) {
-        if (Math.min(s, winEnd) - cursor >= t.duration) { fits = true; break; }
-        cursor = snapUp(Math.max(cursor, e));
+      for (const [bs, be] of busy) {
+        if (Math.min(bs, winEnd) - cursor >= t.duration) { fits = true; break; }
+        cursor = snapUp(Math.max(cursor, be));
         if (cursor >= winEnd) break;
       }
       if (!fits && cursor < winEnd && winEnd - cursor >= t.duration) fits = true;
       if (fits) {
-        const slot = { date: k, start: cursor, end: cursor + t.duration, pinned: false };
-        placed[t.id] = slot;
-        (busyByDay[k] ||= []).push([slot.start, slot.end]);
-        break;
+        placed[t.id] = { date: k, start: cursor, end: cursor + t.duration, pinned: false };
+        (busyByDay[k] ||= []).push([cursor, cursor + t.duration]);
+        return true;
       }
     }
+    return false;
+  };
+
+  const failed = new Set();
+  const remaining = new Set(autoQueue.map((t) => t.id));
+  const resolved = (d) => !!placed[d] || failed.has(d);
+  while (remaining.size) {
+    let best = null;
+    for (const id of remaining) {
+      const t = byId[id];
+      if (depsOf(t).every(resolved) && (!best || cmpTask(t, best) < 0)) best = t;
+    }
+    const cyclic = !best;
+    if (cyclic) {
+      for (const id of remaining) { const t = byId[id]; if (!best || cmpTask(t, best) < 0) best = t; }
+    }
+    remaining.delete(best.id);
+    const deps = depsOf(best);
+    if (!cyclic && deps.some((d) => failed.has(d))) { failed.add(best.id); continue; }
+    let minDate = null, minMin = 0;
+    for (const d of deps) {
+      const p = placed[d];
+      if (!p) continue;
+      if (minDate === null || p.date > minDate) { minDate = p.date; minMin = p.end; }
+      else if (p.date === minDate) minMin = Math.max(minMin, p.end);
+    }
+    if (!tryPlace(best, minDate, minMin)) failed.add(best.id);
   }
+
   return placed;
 }
 

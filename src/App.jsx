@@ -69,7 +69,7 @@ function migrate(d) {
     }
     out.categories = cats;
   }
-  out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, ...t }));
+  out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, dependsOn: null, ...t }));
   out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, exceptions: [], location: null, ...e }));
   out.holidayCals = d.holidayCals || [];
   out.holidayCache = d.holidayCache || {};
@@ -153,7 +153,7 @@ const inputStyle = (T) => ({ background: T.input, color: T.text, border: "1px so
 const selStyle = (T) => ({ background: T.surface2, color: T.text, border: `1px solid ${T.border}` });
 
 /* ---------- unified event / task editor ---------- */
-function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDeleteSeries, onDeleteOccurrence, onDeleteTask, onClose }) {
+function ItemModal({ draft, events, tasks = [], categories, onSaveEvent, onSaveTask, onDeleteSeries, onDeleteOccurrence, onDeleteTask, onClose }) {
   const T = useT();
   const isNew = !draft.id;
   const [itemType, setItemType] = useState(draft.itemType || "event");
@@ -187,6 +187,24 @@ function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDelet
   const [taskDate, setTaskDate] = useState(draft.scheduledAt?.date || draft.date || dateKey(new Date()));
   const [taskStart, setTaskStart] = useState(draft.scheduledAt?.start ?? draft.start ?? 540);
   const [autoReschedule, setAutoReschedule] = useState(draft.autoReschedule !== false);
+  const [dependsOn, setDependsOn] = useState(draft.dependsOn || "");
+
+  /* prerequisite choices: other pending tasks, excluding anything that
+     (transitively) depends on this task — picking those would make a cycle */
+  const depOptions = useMemo(() => {
+    if (itemType !== "task") return [];
+    const byId = {};
+    for (const t of tasks) byId[t.id] = t;
+    const chainsBackTo = (t, target) => {
+      let cur = t, hops = 0;
+      while (cur && cur.dependsOn && hops++ < 50) {
+        if (cur.dependsOn === target) return true;
+        cur = byId[cur.dependsOn];
+      }
+      return false;
+    };
+    return tasks.filter((t) => !t.done && t.id !== draft.id && !(draft.id && chainsBackTo(t, draft.id)));
+  }, [tasks, draft.id, itemType]);
 
   const suggestions = useMemo(() => {
     if (itemType !== "event") return [];
@@ -279,6 +297,7 @@ function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDelet
         duration, priority, category, deadline: deadline || null,
         scheduledAt: pickTime ? { date: taskDate, start: taskStart } : null,
         autoReschedule,
+        dependsOn: dependsOn || null,
       });
     }
   };
@@ -415,6 +434,15 @@ function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDelet
               <select value={category} onChange={(e) => setCategory(e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)}>
                 {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
+            </Row>
+            <Row label="After">
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <select value={dependsOn} onChange={(e) => setDependsOn(e.target.value)} className="rounded-md px-2 py-1 text-sm max-w-full" style={{ ...selStyle(T), maxWidth: 220 }}>
+                  <option value="">— nothing —</option>
+                  {depOptions.map((o) => <option key={o.id} value={o.id}>{o.title}</option>)}
+                </select>
+                {dependsOn && <span className="text-[10px]" style={{ color: T.dim }}>won't be scheduled until that task's slot ends</span>}
+              </div>
             </Row>
             <Row label="When">
               <div className="flex flex-col gap-1.5">
@@ -593,7 +621,7 @@ function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleT
         <div className="mt-0.5"><Check checked={done} onToggle={() => toggleTask(t.id)} color={c.border} /></div>
         <div className="min-w-0 pointer-events-none">
           <div className={`text-xs font-semibold truncate ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>
-            {!done && item.pinned ? "📌 " : ""}{t.title}
+            {!done && item.pinned ? "📌 " : ""}{!done && item.chained ? "⛓ " : ""}{t.title}
           </div>
           {g.height >= 40 && <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>{toAmPm(item.start)} – {toAmPm(item.end)}{overdue ? " · overdue" : ""}</div>}
         </div>
@@ -882,6 +910,7 @@ export default function Planner() {
   const gestureRef = useRef(null);
   const hourHRef = useRef(hourH);
   hourHRef.current = hourH;
+  const viewRef = useRef("week");
 
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 30000); return () => clearInterval(t); }, []);
   useEffect(() => { initIdentity((u) => { setUser(u); setAuthReady(true); }); }, []);
@@ -1035,7 +1064,10 @@ export default function Planner() {
         continue;
       }
       const s = schedule[t.id];
-      if (s) (m[s.date] ||= []).push({ task: t, ...s, done: false, effPriority: effectivePriority(t, todayKey) });
+      if (s) {
+        const prereq = t.dependsOn ? tasks.find((x) => x.id === t.dependsOn) : null;
+        (m[s.date] ||= []).push({ task: t, ...s, done: false, effPriority: effectivePriority(t, todayKey), chained: !!(prereq && !prereq.done) });
+      }
     }
     return m;
   }, [tasks, schedule, todayKey]);
@@ -1103,6 +1135,7 @@ export default function Planner() {
     });
   }, []);
 
+  viewRef.current = view;
   const visibleN = view === "day" ? 1 : isMobile ? 3 : 7;
   const anchorKeyRef = useRef(dateKey(anchor));
   anchorKeyRef.current = dateKey(anchor);
@@ -1286,7 +1319,7 @@ export default function Planner() {
            gesture fires pointercancel, which used to pop the editor early */
         armTouchBlock();
         placeFloating(st.lx, st.ly);
-      }, 400);
+      }, 500);
     }
     dragRef.current = st;
 
@@ -1295,7 +1328,7 @@ export default function Planner() {
       if (!s || !s.create) return;
       s.lx = ev.clientX; s.ly = ev.clientY;
       const dx = ev.clientX - s.x0, dy = ev.clientY - s.y0;
-      if (!s.active) { if (Math.hypot(dx, dy) > 10) { clearTimeout(s.timer); cleanup(); } return; }
+      if (!s.active) { if (Math.hypot(dx, dy) > 14) { clearTimeout(s.timer); cleanup(); } return; }
       ev.preventDefault();
       if (s.floating) {
         placeFloating(ev.clientX, ev.clientY);
@@ -1401,15 +1434,20 @@ export default function Planner() {
         }
         if (g.axis === "v") {
           const ratio = dy / (g.startDy || 1);
-          const next = Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * ratio)));
-          if (g.anchorMinute != null) zoomAnchor.current = { minute: g.anchorMinute, offsetY: g.anchorOffsetY };
-          setHourH(next);
+          g.zoomTarget = Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * ratio));
+          /* one state update per frame, fractional scale — no integer stepping */
+          if (!g.raf) g.raf = requestAnimationFrame(() => {
+            g.raf = null;
+            if (g.anchorMinute != null) zoomAnchor.current = { minute: g.anchorMinute, offsetY: g.anchorOffsetY };
+            setHourH(g.zoomTarget);
+          });
         } else if (g.axis === "h" && !g.fired) {
           const ratio = dx / (g.startDx || 1);
           if (ratio < 0.6) { g.fired = true; zoomView(-1); }       /* pinch in -> more detail */
           else if (ratio > 1.6) { g.fired = true; zoomView(1); }   /* spread -> less detail */
         }
       } else if (g.pts.size === 1 && !g.pinching) {
+        if (viewRef.current !== "month") return; /* time grid: one finger scrolls; the week strip changes days */
         if (dragRef.current && dragRef.current.active) return; /* a block drag / floating create owns this finger */
         const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
         if (!g.swipeAxis && (Math.abs(dx) > 24 || Math.abs(dy) > 24)) g.swipeAxis = Math.abs(dx) > Math.abs(dy) * 1.4 ? "h" : "v";
@@ -1425,7 +1463,11 @@ export default function Planner() {
     };
     const up = (ev) => {
       g.pts.delete(ev.pointerId);
-      if (g.pts.size < 2) { g.pinching = false; g.axis = null; g.fired = false; }
+      if (g.pts.size < 2) {
+        g.pinching = false; g.axis = null; g.fired = false;
+        if (g.raf) { cancelAnimationFrame(g.raf); g.raf = null; }
+        if (g.zoomTarget != null) { setHourH(Math.round(g.zoomTarget)); g.zoomTarget = null; }
+      }
       if (g.pts.size === 0) {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
@@ -1535,6 +1577,8 @@ export default function Planner() {
             {pendingTasks.map((t) => {
               const slot = schedule[t.id];
               const p = prioSet(t.priority, T.mode);
+              const prereq = t.dependsOn ? tasks.find((x) => x.id === t.dependsOn) : null;
+              const prereqPending = prereq && !prereq.done;
               const overdue = slot && ((t.deadline && slot.date > t.deadline) || (slot.pinned && (slot.date < dateKey(now) || (slot.date === dateKey(now) && slot.end <= nowMin))));
               return (
                 <div key={t.id} className="group flex items-start gap-2 px-2 py-2 rounded-lg rl-hover cursor-pointer" onClick={() => openTask(t)}>
@@ -1544,8 +1588,8 @@ export default function Planner() {
                       <span className="rounded-full flex-shrink-0" style={{ width: 6, height: 6, background: p.dot }} />{t.title}
                     </div>
                     <div className="text-[11px]" style={{ color: overdue ? T.danger : T.dim }}>
-                      {slot ? `${slot.pinned ? "📌 " : ""}${sameDay(parseKey(slot.date), now) ? "Today" : `${DOW[dowOfKey(slot.date)]} ${+slot.date.slice(8)}`} · ${toAmPm(slot.start)}` : "No slot in next 4 weeks"}
-                      {" · "}{t.duration < 60 ? `${t.duration}m` : `${t.duration / 60}h`} · {catName(t.category)}{overdue ? " · overdue" : ""}
+                      {slot ? `${slot.pinned ? "📌 " : ""}${sameDay(parseKey(slot.date), now) ? "Today" : `${DOW[dowOfKey(slot.date)]} ${+slot.date.slice(8)}`} · ${toAmPm(slot.start)}` : prereqPending && !schedule[prereq.id] ? `Waiting on “${prereq.title}”` : "No slot in next 4 weeks"}
+                      {" · "}{t.duration < 60 ? `${t.duration}m` : `${t.duration / 60}h`} · {catName(t.category)}{slot && prereqPending ? ` · ⛓ after ${prereq.title}` : ""}{overdue ? " · overdue" : ""}
                     </div>
                   </div>
                   <button onClick={(e) => { e.stopPropagation(); deleteTask(t.id); }} className="opacity-0 group-hover:opacity-100 text-xs px-1" style={{ color: T.faint }} aria-label="Delete task">✕</button>
@@ -1624,7 +1668,7 @@ export default function Planner() {
         </div>
 
         {itemDraft && (
-          <ItemModal draft={itemDraft} events={events} categories={categories}
+          <ItemModal draft={itemDraft} events={events} tasks={tasks} categories={categories}
             onSaveEvent={saveEvent} onSaveTask={saveTask}
             onDeleteSeries={deleteSeries} onDeleteOccurrence={deleteOccurrence} onDeleteTask={deleteTask}
             onClose={() => setItemDraft(null)} />
