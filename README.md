@@ -111,3 +111,16 @@ safely by the scheduler. Chained tasks show a link icon.
 One finger scrolls. Hold spawns a draggable event block (release opens the
 editor). Two fingers zoom — smooth, frame-synced, anchored at your fingers.
 The week strip changes days/weeks; month view still swipes between months.
+
+## Time off (holidays in the main UI)
+＋ New -> "Time off": pick a start and end date, done. Those days show a 🏖
+all-day banner, the whole day is shaded as downtime, and the auto-scheduler
+skips them entirely — tasks roll to the other side of the break. This is the
+day-to-day way to declare holidays; the per-category exceptions in Hours &
+Categories remain for fine-tuning (e.g. only Work off, Personal still open).
+
+## PWA / icons
+icon.svg (favicon), icon-192/512.png + manifest.webmanifest (installable PWA,
+standalone display), apple-touch-icon.png (iOS home screen). The app locks to
+the dynamic viewport (100dvh) with safe-area padding, so no more page-level
+scrollbar behind the calendar on iPhone.

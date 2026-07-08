@@ -70,7 +70,7 @@ function migrate(d) {
     out.categories = cats;
   }
   out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, dependsOn: null, ...t }));
-  out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, exceptions: [], location: null, ...e }));
+  out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, timeOff: false, exceptions: [], location: null, ...e }));
   out.holidayCals = d.holidayCals || [];
   out.holidayCache = d.holidayCache || {};
   out.country = d.country || guessCountry();
@@ -277,6 +277,16 @@ function ItemModal({ draft, events, tasks = [], categories, onSaveEvent, onSaveT
   }, [date, start, tz, allDay]);
 
   const commit = () => {
+    if (itemType === "timeoff") {
+      onSaveEvent({
+        exceptions: [], createdAt: Date.now(), ...draft,
+        id: draft.id || uid(), title: title.trim() || "Time off",
+        date, endDate: endDate > date ? endDate : date,
+        allDay: true, timeOff: true, start: 0, end: 1440,
+        tz: deviceTz, color: "red", repeat: "none", repeatUntil: null, location: null,
+      });
+      return;
+    }
     if (!title.trim()) return;
     if (itemType === "event") {
       /* keep the timed start/end even while all-day, so toggling back
@@ -307,14 +317,15 @@ function ItemModal({ draft, events, tasks = [], categories, onSaveEvent, onSaveT
       style={{ background: itemType === t ? T.accent : "transparent", color: itemType === t ? "white" : T.dim }}>{label}</button>
   );
 
+  const typeName = itemType === "event" ? "Event" : itemType === "timeoff" ? "Time Off" : "Task";
   return (
-    <Modal title={isNew ? (itemType === "event" ? "New Event" : "New Task") : (itemType === "event" ? "Edit Event" : "Edit Task")} onClose={onClose}
+    <Modal title={`${isNew ? "New" : "Edit"} ${typeName}`} onClose={onClose}
       footer={
         <>
-          {!isNew && itemType === "event" && repeat !== "none" && draft.occDate && (
+          {!isNew && (itemType === "event" || itemType === "timeoff") && repeat !== "none" && draft.occDate && (
             <button onClick={() => onDeleteOccurrence(draft.id, draft.occDate)} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>Delete this day</button>
           )}
-          {!isNew && itemType === "event" && (
+          {!isNew && (itemType === "event" || itemType === "timeoff") && (
             <button onClick={() => onDeleteSeries(draft.id)} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>{repeat !== "none" ? "Delete series" : "Delete"}</button>
           )}
           {!isNew && itemType === "task" && (
@@ -327,7 +338,7 @@ function ItemModal({ draft, events, tasks = [], categories, onSaveEvent, onSaveT
       <div className="flex flex-col gap-3">
         {isNew && (
           <div className="flex rounded-xl p-0.5" style={{ background: T.surface2 }}>
-            {seg("event", "Event")}{seg("task", "Task")}
+            {seg("event", "Event")}{seg("task", "Task")}{seg("timeoff", "Time off")}
           </div>
         )}
 
@@ -350,7 +361,13 @@ function ItemModal({ draft, events, tasks = [], categories, onSaveEvent, onSaveT
           )}
         </div>
 
-        {itemType === "event" ? (
+        {itemType === "timeoff" ? (
+          <>
+            <Row label="Starts"><input type="date" value={date} onChange={(e) => { setDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)} /></Row>
+            <Row label="Ends"><input type="date" value={endDate} min={date} onChange={(e) => setEndDate(e.target.value < date ? date : e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)} /></Row>
+            <p className="text-[11px] -mt-1" style={{ color: T.dim }}>🏖 No tasks will be auto-scheduled on these days — everything rolls to the other side.</p>
+          </>
+        ) : itemType === "event" ? (
           <>
             <Row label="All-day"><Switch on={allDay} onToggle={() => setAllDay(!allDay)} label="Toggle all-day" /></Row>
             <Row label={allDay ? "Starts" : "Date"}><input type="date" value={date} onChange={(e) => { setDate(e.target.value); if (endDate < e.target.value) setEndDate(e.target.value); }} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)} /></Row>
@@ -732,7 +749,7 @@ function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay,
               <div key={key} className="flex-1 px-0.5 pb-1 flex flex-col gap-0.5 border-l overflow-hidden" style={{ borderColor: T.gridLine }}>
                 {(allDayByDay[key] || []).map((o) => (
                   <button key={o.renderKey} onClick={() => openEvent(o)} className="rounded px-1.5 text-left text-[10px] font-semibold truncate text-white"
-                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.holiday ? "🎌 " : ""}{o.ev.title}</button>
+                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.timeOff ? "🏖 " : o.ev.holiday ? "🎌 " : ""}{o.ev.title}</button>
                 ))}
               </div>
             );
@@ -818,7 +835,7 @@ function MonthGrid({ anchor, now, allDayByDay, timedByDay, tasksByDay, onOpenDay
               <div className="text-xs font-medium inline-flex items-center justify-center rounded-full mb-0.5"
                 style={{ width: 20, height: 20, background: isToday ? T.danger : "transparent", color: isToday ? "white" : inMonth ? T.text : T.faint }}>{d.getDate()}</div>
               {items.slice(0, 3).map((x, i) => {
-                if (x.kind === "allday") return <div key={i} className="truncate rounded px-1 mb-0.5 text-[10px] font-semibold text-white" style={{ background: ACCENTS[x.o.ev.color] || ACCENTS.blue }}>{x.o.ev.title}</div>;
+                if (x.kind === "allday") return <div key={i} className="truncate rounded px-1 mb-0.5 text-[10px] font-semibold text-white" style={{ background: ACCENTS[x.o.ev.color] || ACCENTS.blue }}>{x.o.ev.timeOff ? "🏖 " : ""}{x.o.ev.title}</div>;
                 if (x.kind === "event") { const c = colorSet(x.o.ev.color, T.mode); return <div key={i} className="truncate rounded px-1 mb-0.5 text-[10px] font-medium" style={{ background: c.bg, color: c.text }}>{x.o.ev.title}</div>; }
                 const done = x.it.done;
                 const c = done ? colorSet("green", T.mode) : prioSet(x.it.task.priority, T.mode);
@@ -1108,7 +1125,7 @@ export default function Planner() {
   const openEvent = useCallback((occ) => {
     if (dragRef.current?.moved) return;
     if (occ.ev.holiday) return; /* holidays are read-only */
-    setItemDraft({ ...occ.ev, itemType: "event", occDate: occ.occDate });
+    setItemDraft({ ...occ.ev, itemType: occ.ev.timeOff ? "timeoff" : "event", occDate: occ.occDate });
   }, []);
   const openTask = useCallback((t) => { if (!dragRef.current?.moved) setItemDraft({ ...t, itemType: "task" }); }, []);
   const openMaps = useCallback((loc) => window.open(`https://www.google.com/maps/search/?api=1&query=${loc.lat},${loc.lon}`, "_blank"), []);
@@ -1312,6 +1329,7 @@ export default function Planner() {
       /* iOS-style: hold to spawn a 1-hour block under the finger, then drag
          it anywhere — holding at the left/right edge rolls to other days */
       st.timer = setTimeout(() => {
+        if (dragRef.current !== st) return; /* gesture was cancelled (e.g. a pinch started) */
         st.active = true;
         st.floating = true;
         if (navigator.vibrate) navigator.vibrate(15);
@@ -1380,11 +1398,17 @@ export default function Planner() {
     window.addEventListener("pointercancel", abort);
   }, [stepDay, armTouchBlock, clearTouchBlock]);
 
+  const offDays = useMemo(() => {
+    const set = new Set();
+    for (const o of occurrences) if (o.allDay && o.ev.timeOff) set.add(o.dispDate);
+    return set;
+  }, [occurrences]);
   const unionWindows = useCallback((key) => {
+    if (offDays.has(key)) return null;
     const wins = categories.map((c) => windowFor(c, key)).filter(Boolean);
     if (!wins.length) return null;
     return { start: Math.min(...wins.map((w) => w.start)), end: Math.max(...wins.map((w) => w.end)) };
-  }, [categories]);
+  }, [categories, offDays]);
 
   /* ---------- multitouch: pinch to zoom (vertical, anchored at the pinch
      centre) / switch view (horizontal), plus horizontal swipe that snaps
@@ -1410,8 +1434,9 @@ export default function Planner() {
       }
       if (dragRef.current) {
         clearInterval(dragRef.current.edgeTimer);
+        clearTimeout(dragRef.current.timer); /* pending long-press must die too, or it spawns a ghost block mid-pinch */
         dragRef.current = null;
-        clearTouchBlock(); /* the leak: a live blocker with no owner froze all scrolling */
+        clearTouchBlock();
         setCreatePreview(null);
         setDragPreview(null);
       } /* cancel single-finger drag/create */
@@ -1430,7 +1455,7 @@ export default function Planner() {
         const dx = Math.abs(a.x - b.x), dy = Math.abs(a.y - b.y);
         if (!g.axis) {
           const cdx = Math.abs(dx - g.startDx), cdy = Math.abs(dy - g.startDy);
-          if (cdx > 24 || cdy > 24) g.axis = cdy >= cdx ? "v" : "h";
+          if (cdx > 14 || cdy > 14) g.axis = cdy >= cdx ? "v" : "h";
         }
         if (g.axis === "v") {
           const ratio = dy / (g.startDy || 1);
@@ -1541,7 +1566,7 @@ export default function Planner() {
   if (!loaded) {
     return (
       <ThemeCtx.Provider value={T}>
-        <div className="h-screen flex items-center justify-center text-sm" style={{ color: T.dim, background: T.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>Loading Rollover…</div>
+        <div className="app-h flex items-center justify-center text-sm" style={{ color: T.dim, background: T.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" }}>Loading Rollover…</div>
       </ThemeCtx.Provider>
     );
   }
@@ -1549,7 +1574,7 @@ export default function Planner() {
   return (
     <ThemeCtx.Provider value={T}>
       <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @keyframes rlSlideL{0%{opacity:0.5;transform:translateX(26px)}100%{opacity:1;transform:none}} @keyframes rlSlideR{0%{opacity:0.5;transform:translateX(-26px)}100%{opacity:1;transform:none}} .rl-slide-l{animation:rlSlideL 0.22s ease-out} .rl-slide-r{animation:rlSlideR 0.22s ease-out} @media (prefers-reduced-motion: reduce){.rl-slide-l,.rl-slide-r{animation:none}} @media (max-width:640px){input,select,textarea{font-size:16px !important}} @keyframes rlSheet{0%{transform:translateY(48px);opacity:0.55}100%{transform:none;opacity:1}} .rl-sheet{animation:rlSheet 0.24s cubic-bezier(0.22,0.61,0.36,1)} @media (prefers-reduced-motion: reduce){.rl-sheet{animation:none}} *{-webkit-touch-callout:none} input,textarea{-webkit-user-select:text;user-select:text} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
-      <div className="h-screen flex select-none" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode }}>
+      <div className="app-h flex select-none" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode, paddingTop: "env(safe-area-inset-top)" }}>
         {/* ---------- sidebar (drawer on mobile) ---------- */}
         {isMobile && drawerOpen && <div className="fixed inset-0 z-30" style={{ background: "rgba(0,0,0,0.45)" }} onClick={() => setDrawerOpen(false)} />}
         {(!isMobile || drawerOpen) && (

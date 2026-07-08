@@ -93,8 +93,12 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
   const nowMin = now.getHours() * 60 + now.getMinutes();
 
   const busyByDay = {};
+  const offDays = new Set();
   for (const o of expandOccurrences(events, todayKey, endKey, displayTz)) {
-    if (o.allDay) continue;
+    if (o.allDay) {
+      if (o.ev.timeOff) offDays.add(o.dispDate); /* holidays you declared: nothing lands here */
+      continue;
+    }
     (busyByDay[o.dispDate] ||= []).push([o.dispStart, Math.min(o.dispEnd, 1440)]);
   }
 
@@ -148,6 +152,7 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
     for (let i = 0; i < HORIZON; i++) {
       const k = addDaysKey(todayKey, i);
       if (minDate && k < minDate) continue;
+      if (offDays.has(k)) continue;
       const win = windowFor(cat, k);
       if (!win) continue;
       let winStart = win.start;
