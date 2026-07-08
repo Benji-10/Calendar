@@ -12,7 +12,7 @@ import { HOLIDAY_CALENDARS, calByCode, guessCountry, fetchHolidays, yearsForRang
 
 const HOUR_H_BASE = 48;
 const HOUR_H_MIN = 30;
-const HOUR_H_MAX = 160;
+const HOUR_H_MAX = 84;
 const AXIS_W = 56;
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 
@@ -115,13 +115,22 @@ function Switch({ on, onToggle, label }) {
 
 function Modal({ title, onClose, children, footer, wide }) {
   const T = useT();
+  /* bottom sheet on phones, centred card on desktop */
+  const sheet = typeof window !== "undefined" && window.innerWidth < 640;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.45)" }} onClick={onClose}>
-      <div className={`rounded-2xl w-full ${wide ? "max-w-lg" : "max-w-sm"} max-h-full overflow-y-auto`}
-        onClick={(e) => e.stopPropagation()} style={{ background: T.surface, boxShadow: T.shadow, border: `1px solid ${T.border}` }}>
-        <div className="px-5 pt-4 pb-2 flex items-center justify-between sticky top-0 rounded-t-2xl" style={{ background: T.surface }}>
+    <div className={`fixed inset-0 z-50 flex ${sheet ? "items-end" : "items-center justify-center p-4"}`} style={{ background: "rgba(0,0,0,0.45)" }} onClick={onClose}>
+      <div
+        className={sheet ? "rl-sheet w-full rounded-t-2xl overflow-y-auto" : `rounded-2xl w-full ${wide ? "max-w-lg" : "max-w-sm"} max-h-full overflow-y-auto`}
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: T.surface, boxShadow: T.shadow, border: sheet ? "none" : `1px solid ${T.border}`, maxHeight: sheet ? "88vh" : undefined, paddingBottom: sheet ? "env(safe-area-inset-bottom)" : 0 }}>
+        {sheet && (
+          <div className="flex justify-center pt-2" onClick={onClose}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: T.faint }} />
+          </div>
+        )}
+        <div className={`px-5 ${sheet ? "pt-2" : "pt-4"} pb-2 flex items-center justify-between sticky top-0 ${sheet ? "" : "rounded-t-2xl"}`} style={{ background: T.surface }}>
           <h3 className="font-semibold text-base" style={{ color: T.text }}>{title}</h3>
-          <button onClick={onClose} className="text-sm" style={{ color: T.dim }}>✕</button>
+          <button onClick={onClose} className="text-sm px-1" style={{ color: T.dim }}>✕</button>
         </div>
         <div className="px-5 pb-4">{children}</div>
         {footer && <div className="px-5 pb-4 flex gap-2 justify-end items-center flex-wrap">{footer}</div>}
@@ -299,7 +308,7 @@ function ItemModal({ draft, events, categories, onSaveEvent, onSaveTask, onDelet
       <div className="flex flex-col gap-3">
         {isNew && (
           <div className="flex rounded-xl p-0.5" style={{ background: T.surface2 }}>
-            {seg("event", "Event — fixed time")}{seg("task", "Task — auto-schedules")}
+            {seg("event", "Event")}{seg("task", "Task")}
           </div>
         )}
 
@@ -619,23 +628,34 @@ function WeekStrip({ anchor, now, visibleN, onPickDay, onSwipeWeek }) {
   const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
   const selStart = dateKey(anchor);
   const selEnd = dateKey(addDays(anchor, visibleN - 1));
-  const x0 = useRef(null);
+  const gest = useRef(null);
+  const swiped = useRef(false);
   return (
-    <div className="flex px-1 pt-1 border-b select-none" style={{ borderColor: T.border, touchAction: "pan-x" }}
-      onPointerDown={(e) => { x0.current = { x: e.clientX, id: e.pointerId }; }}
-      onPointerUp={(e) => {
-        if (x0.current && x0.current.id === e.pointerId) {
-          const dx = e.clientX - x0.current.x;
-          if (Math.abs(dx) > 45) onSwipeWeek(dx < 0 ? 1 : -1);
+    <div className="flex px-1 pt-1 border-b select-none" style={{ borderColor: T.border, touchAction: "none" }}
+      onPointerDown={(e) => {
+        gest.current = { x: e.clientX, id: e.pointerId, fired: false };
+        swiped.current = false;
+        try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+      }}
+      onPointerMove={(e) => {
+        const g = gest.current;
+        if (!g || g.id !== e.pointerId || g.fired) return;
+        const dx = e.clientX - g.x;
+        if (Math.abs(dx) > 35) {
+          g.fired = true;
+          swiped.current = true;
+          onSwipeWeek(dx < 0 ? 1 : -1);
         }
-        x0.current = null;
-      }}>
+      }}
+      onPointerUp={() => { gest.current = null; }}
+      onPointerCancel={() => { gest.current = null; }}>
       {days.map((d) => {
         const k = dateKey(d);
         const isToday = sameDay(d, now);
         const sel = k >= selStart && k <= selEnd;
         return (
-          <button key={k} onClick={() => onPickDay(d)} className="flex-1 flex flex-col items-center gap-0.5 pb-1">
+          <button key={k} onClick={() => { if (swiped.current) { swiped.current = false; return; } onPickDay(d); }}
+            className="flex-1 flex flex-col items-center gap-0.5 pb-1">
             <span className="text-[9px] font-semibold" style={{ color: T.dim }}>{DOW[d.getDay()][0]}</span>
             <span className="text-xs font-semibold rounded-full flex items-center justify-center"
               style={{ width: 26, height: 26, background: isToday ? T.danger : sel ? (T.mode === "dark" ? "#3a3a3e" : "#e4e4e9") : "transparent", color: isToday ? "white" : T.text }}>
@@ -1244,7 +1264,11 @@ export default function Planner() {
         st.active = true;
         st.floating = true;
         if (navigator.vibrate) navigator.vibrate(15);
-        placeFloating(st.x0, st.y0);
+        /* stop the browser claiming the gesture for scrolling — a claimed
+           gesture fires pointercancel, which used to pop the editor early */
+        st.blockTouch = (te) => te.preventDefault();
+        window.addEventListener("touchmove", st.blockTouch, { passive: false });
+        placeFloating(st.lx, st.ly);
       }, 400);
     }
     dragRef.current = st;
@@ -1291,17 +1315,21 @@ export default function Planner() {
       cleanup();
     };
     const cleanup = () => {
-      const s = dragRef.current;
-      if (s) clearInterval(s.edgeTimer);
+      const cur = dragRef.current;
+      if (cur) {
+        clearInterval(cur.edgeTimer);
+        if (cur.blockTouch) window.removeEventListener("touchmove", cur.blockTouch);
+      }
       dragRef.current = null;
       setCreatePreview(null);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
-      window.removeEventListener("pointercancel", up);
+      window.removeEventListener("pointercancel", abort);
     };
+    const abort = () => cleanup();
     window.addEventListener("pointermove", move, { passive: false });
     window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", up);
+    window.addEventListener("pointercancel", abort);
   }, [stepDay]);
 
   const unionWindows = useCallback((key) => {
@@ -1457,7 +1485,7 @@ export default function Planner() {
 
   return (
     <ThemeCtx.Provider value={T}>
-      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @keyframes rlSlideL{0%{opacity:0.5;transform:translateX(26px)}100%{opacity:1;transform:none}} @keyframes rlSlideR{0%{opacity:0.5;transform:translateX(-26px)}100%{opacity:1;transform:none}} .rl-slide-l{animation:rlSlideL 0.22s ease-out} .rl-slide-r{animation:rlSlideR 0.22s ease-out} @media (prefers-reduced-motion: reduce){.rl-slide-l,.rl-slide-r{animation:none}} @media (max-width:640px){input,select,textarea{font-size:16px !important}} *{-webkit-touch-callout:none} input,textarea{-webkit-user-select:text;user-select:text} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
+      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @keyframes rlSlideL{0%{opacity:0.5;transform:translateX(26px)}100%{opacity:1;transform:none}} @keyframes rlSlideR{0%{opacity:0.5;transform:translateX(-26px)}100%{opacity:1;transform:none}} .rl-slide-l{animation:rlSlideL 0.22s ease-out} .rl-slide-r{animation:rlSlideR 0.22s ease-out} @media (prefers-reduced-motion: reduce){.rl-slide-l,.rl-slide-r{animation:none}} @media (max-width:640px){input,select,textarea{font-size:16px !important}} @keyframes rlSheet{0%{transform:translateY(48px);opacity:0.55}100%{transform:none;opacity:1}} .rl-sheet{animation:rlSheet 0.24s cubic-bezier(0.22,0.61,0.36,1)} @media (prefers-reduced-motion: reduce){.rl-sheet{animation:none}} *{-webkit-touch-callout:none} input,textarea{-webkit-user-select:text;user-select:text} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
       <div className="h-screen flex select-none" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode }}>
         {/* ---------- sidebar (drawer on mobile) ---------- */}
         {isMobile && drawerOpen && <div className="fixed inset-0 z-30" style={{ background: "rgba(0,0,0,0.45)" }} onClick={() => setDrawerOpen(false)} />}

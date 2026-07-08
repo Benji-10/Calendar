@@ -59,8 +59,11 @@ describe("Rollover app", () => {
     render(<Planner />);
     await waitFor(() => screen.getByText("＋ New"));
     fireEvent.click(screen.getByText("＋ New"));
-    await waitFor(() => expect(screen.getByText(/fixed time/i)).toBeTruthy());
-    expect(screen.getByText(/auto-schedules/i)).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("New Event")).toBeTruthy());
+    /* segmented control offers both types */
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(buttons).toContain("Event");
+    expect(buttons).toContain("Task");
   });
 });
 
