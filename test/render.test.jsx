@@ -63,3 +63,17 @@ describe("Rollover app", () => {
     expect(screen.getByText(/auto-schedules/i)).toBeTruthy();
   });
 });
+
+describe("mobile layout", () => {
+  it("hides the task sidebar behind a drawer on narrow screens", async () => {
+    window.innerWidth = 390;
+    window.dispatchEvent(new Event("resize"));
+    render(<Planner />);
+    await waitFor(() => screen.getByLabelText("Open tasks"));
+    /* quick-add lives in the drawer, so it should not be visible yet */
+    expect(screen.queryByPlaceholderText(/Quick task/i)).toBeNull();
+    fireEvent.click(screen.getByLabelText("Open tasks"));
+    await waitFor(() => expect(screen.getByPlaceholderText(/Quick task/i)).toBeTruthy());
+    window.innerWidth = 1024;
+  });
+});

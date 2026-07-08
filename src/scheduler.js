@@ -161,7 +161,7 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
    would actually collide; otherwise items get a small left indent so their
    colored borders don't stack, but bodies still use most of the width.
    Later items sit on top (higher z) so both stay clickable. */
-export function layoutDay(items, minColMinutes = 45) {
+export function layoutDay(items, clearanceMin = 30) {
   const sorted = items.slice().sort((a, b) => a.start - b.start || a.end - b.end);
   const clusters = [];
   let cur = [];
@@ -185,9 +185,20 @@ export function layoutDay(items, minColMinutes = 45) {
       if (!placed) { it._col = cols.length; cols.push(it.end); }
     }
     const nCols = cols.length;
-    /* would text collide? only if any item is too short to read side-by-side
-       OR the cluster is dense (3+ columns). Otherwise indent-only. */
-    const tight = nCols >= 3 || cluster.some((it) => it.end - it.start < minColMinutes);
+    /* Text clashes when two time-overlapping items in different columns
+       start within a title-height of each other — then give every item an
+       equal share of the width. Otherwise the starts are staggered enough
+       that titles don't collide, so just indent the later ones. */
+    let tight = nCols >= 3;
+    if (!tight && nCols === 2) {
+      for (let i = 0; i < cluster.length && !tight; i++) {
+        for (let j = i + 1; j < cluster.length && !tight; j++) {
+          const a = cluster[i], b = cluster[j];
+          const overlap = Math.min(a.end, b.end) - Math.max(a.start, b.start);
+          if (a._col !== b._col && overlap > 0 && Math.abs(a.start - b.start) < clearanceMin) tight = true;
+        }
+      }
+    }
     for (let i = 0; i < cluster.length; i++) {
       const it = cluster[i];
       out.push({

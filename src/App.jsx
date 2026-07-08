@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback, useContext, createContext } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext } from "react";
 import tzlookup from "tz-lookup";
 import {
   toAmPm, MONTHS, DOW, deviceTz,
@@ -528,15 +528,15 @@ function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMa
       onClick={(e) => { e.stopPropagation(); openEvent(occ); }}
       style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px solid ${c.border}`, zIndex: lay ? lay.z : 2, touchAction: "none" }}>
       <div className="px-1.5 py-0.5 pointer-events-none">
-        <div className="text-xs font-semibold truncate" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>{occ.ev.repeat && occ.ev.repeat !== "none" ? "\u21bb " : ""}{occ.ev.title}</div>
+        <div className="text-xs font-semibold truncate" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>{occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}</div>
         {g.height >= 40 && (
           <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>
-            {toAmPm(start)} \u2013 {toAmPm(occ.dispEnd % 1440)}{occ.dispEnd > 1440 ? " \u207a\u00b9" : ""}{occ.ev.tz !== deviceTz ? ` \u00b7 ${tzLabel(occ.ev.tz, occ.startUtc)}` : ""}
+            {toAmPm(start)} – {toAmPm(occ.dispEnd % 1440)}{occ.dispEnd > 1440 ? " ⁺¹" : ""}{occ.ev.tz !== deviceTz ? ` · ${tzLabel(occ.ev.tz, occ.startUtc)}` : ""}
           </div>
         )}
         {g.height >= 64 && occ.ev.location && (
           <div className="text-[10px] truncate pointer-events-auto cursor-pointer" style={{ color: c.text, opacity: 0.7 }}
-            onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openMaps(occ.ev.location); }}>\ud83d\udccd {occ.ev.location.name}</div>
+            onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); openMaps(occ.ev.location); }}>📍 {occ.ev.location.name}</div>
         )}
       </div>
       <div className="absolute left-0 right-0 top-0 h-2 opacity-0 group-hover/ev:opacity-100 cursor-row-resize flex justify-center"
@@ -566,14 +566,14 @@ function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleT
       onPointerDown={(e) => { if (!done) beginDrag(e, { type: "task", item }, "move"); }}
       onClick={(e) => { e.stopPropagation(); openTask(t); }}
       style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, zIndex: lay ? lay.z : 2, opacity: done ? 0.6 : 1, touchAction: done ? "auto" : "none" }}
-      title={done ? "Completed" : item.pinned ? "Pinned time \u2014 drag to move" : "Auto-scheduled \u2014 drag to pin a time"}>
+      title={done ? "Completed" : item.pinned ? "Pinned time — drag to move" : "Auto-scheduled — drag to pin a time"}>
       <div className="flex items-start gap-1 px-1 py-0.5">
         <div className="mt-0.5"><Check checked={done} onToggle={() => toggleTask(t.id)} color={c.border} /></div>
         <div className="min-w-0 pointer-events-none">
           <div className={`text-xs font-semibold truncate ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.3" }}>
-            {!done && item.pinned ? "\ud83d\udccc " : ""}{t.title}
+            {!done && item.pinned ? "📌 " : ""}{t.title}
           </div>
-          {g.height >= 40 && <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>{toAmPm(item.start)} \u2013 {toAmPm(item.end)}{overdue ? " \u00b7 overdue" : ""}</div>}
+          {g.height >= 40 && <div className="text-[10px] truncate" style={{ color: c.text, opacity: 0.7 }}>{toAmPm(item.start)} – {toAmPm(item.end)}{overdue ? " · overdue" : ""}</div>}
         </div>
       </div>
       {!done && (
@@ -594,7 +594,7 @@ function GhostBlock({ preview, hourH }) {
     <div className="absolute left-0.5 right-1 rounded-lg px-1.5 py-0.5 overflow-hidden pointer-events-none"
       style={{ top: (start / 60) * hourH, height: Math.max(((end - start) / 60) * hourH - 2, 16), background: preview.cset.bg, borderLeft: `3px ${preview.dashed ? "dashed" : "solid"} ${preview.cset.border}`, zIndex: 20, boxShadow: T.shadow }}>
       <div className="text-xs font-semibold truncate" style={{ color: preview.cset.text }}>{preview.title}</div>
-      <div className="text-[10px]" style={{ color: preview.cset.text, opacity: 0.75 }}>{toAmPm(start)} \u2013 {toAmPm(preview.dispEnd % 1440)}</div>
+      <div className="text-[10px]" style={{ color: preview.cset.text, opacity: 0.75 }}>{toAmPm(start)} – {toAmPm(preview.dispEnd % 1440)}</div>
     </div>
   );
 }
@@ -627,7 +627,7 @@ function TimeGrid({ days, now, nowMin, hourH, allDayByDay, timedByDay, tasksByDa
               <div key={key} className="flex-1 px-0.5 pb-1 flex flex-col gap-0.5 border-l overflow-hidden" style={{ borderColor: T.gridLine }}>
                 {(allDayByDay[key] || []).map((o) => (
                   <button key={o.renderKey} onClick={() => openEvent(o)} className="rounded px-1.5 text-left text-[10px] font-semibold truncate text-white"
-                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.holiday ? "\ud83c\udf8c " : ""}{o.ev.title}</button>
+                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}>{o.ev.holiday ? "🎌 " : ""}{o.ev.title}</button>
                 ))}
               </div>
             );
@@ -636,7 +636,7 @@ function TimeGrid({ days, now, nowMin, hourH, allDayByDay, timedByDay, tasksByDa
       </div>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden relative" style={{ overscrollBehavior: "contain" }}>
-        <div ref={gridBodyRef} className={`flex relative ${transition ? "rl-fade" : ""}`} style={{ height: 24 * hourH }} onPointerDown={onGridPointerDown}>
+        <div ref={gridBodyRef} className={`flex relative ${transition ? "rl-fade" : ""}`} style={{ height: 24 * hourH, touchAction: "pan-y" }} onPointerDown={onGridPointerDown}>
           <div style={{ width: AXIS_W }} className="relative flex-shrink-0">
             {Array.from({ length: 23 }, (_, i) => i + 1).map((h) => (
               <div key={h} className="absolute right-1.5 text-[10px]" style={{ top: h * hourH - 6, color: T.dim }}>{hourH < 40 && h % 2 ? "" : toAmPm(h * 60)}</div>
@@ -648,15 +648,16 @@ function TimeGrid({ days, now, nowMin, hourH, allDayByDay, timedByDay, tasksByDa
             const laid = layoutFor(key);
             return (
               <div key={key} className="flex-1 relative border-l" style={{ borderColor: T.gridLine }}>
-                {Array.from({ length: 24 }, (_, h) => (
-                  <div key={h} className="absolute left-0 right-0 border-t" style={{ top: h * hourH, borderColor: T.gridLine }} />
-                ))}
+                {/* downtime shading first, hour lines painted on top of it */}
                 {win ? (
                   <>
                     <div className="absolute left-0 right-0" style={{ top: 0, height: (win.start / 60) * hourH, background: T.shade }} />
                     <div className="absolute left-0 right-0" style={{ top: (win.end / 60) * hourH, bottom: 0, background: T.shade }} />
                   </>
                 ) : <div className="absolute inset-0" style={{ background: T.shade }} />}
+                {Array.from({ length: 24 }, (_, h) => (
+                  <div key={h} className="absolute left-0 right-0 border-t" style={{ top: h * hourH, borderColor: T.gridLine }} />
+                ))}
                 <div className="absolute inset-0" onPointerDown={(e) => beginCreate(e, key)} />
                 {laid.events.map(({ occ, lay }) => (
                   <EventBlock key={occ.renderKey} occ={occ} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} />
@@ -667,7 +668,7 @@ function TimeGrid({ days, now, nowMin, hourH, allDayByDay, timedByDay, tasksByDa
                 {dragPreview && dragPreview.dispDate === key && <GhostBlock preview={dragPreview} hourH={hourH} />}
                 {createPreview && createPreview.date === key && (
                   <div className="absolute left-0.5 right-1 rounded-lg pointer-events-none" style={{ top: (createPreview.start / 60) * hourH, height: ((createPreview.end - createPreview.start) / 60) * hourH, background: colorSet("blue", T.mode).bg, border: `1.5px dashed ${T.accent}`, zIndex: 15 }}>
-                    <div className="text-[10px] px-1.5 pt-0.5 font-medium" style={{ color: colorSet("blue", T.mode).text }}>{toAmPm(createPreview.start)} \u2013 {toAmPm(createPreview.end)}</div>
+                    <div className="text-[10px] px-1.5 pt-0.5 font-medium" style={{ color: colorSet("blue", T.mode).text }}>{toAmPm(createPreview.start)} – {toAmPm(createPreview.end)}</div>
                   </div>
                 )}
                 {/* faint now-line across every day */}
@@ -790,6 +791,11 @@ export default function Planner() {
   const [hourH, setHourH] = useState(HOUR_H_BASE);
   const [gutter, setGutter] = useState(0);
   const [transition, setTransition] = useState(false);
+  const [isMobile, setIsMobile] = useState(() => (typeof window !== "undefined" ? window.innerWidth < 640 : false));
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const zoomAnchor = useRef(null);
+  const lastDirRef = useRef(1);
+  const wheelAccum = useRef(0);
   const scrollRef = useRef(null);
   const gridBodyRef = useRef(null);
   const saveTimer = useRef(null);
@@ -807,6 +813,7 @@ export default function Planner() {
     const measure = () => {
       const el = scrollRef.current;
       if (el) setGutter(el.offsetWidth - el.clientWidth);
+      setIsMobile(window.innerWidth < 640);
     };
     measure();
     window.addEventListener("resize", measure);
@@ -867,6 +874,15 @@ export default function Planner() {
     });
   }, [view, loaded]);
 
+  /* keep the zoom origin (pinch centre / cursor) fixed while the scale changes */
+  useLayoutEffect(() => {
+    const a = zoomAnchor.current;
+    if (a && scrollRef.current) {
+      scrollRef.current.scrollTop = Math.max(0, (a.minute / 60) * hourH - a.offsetY);
+      zoomAnchor.current = null;
+    }
+  }, [hourH]);
+
   const nowMin = now.getHours() * 60 + now.getMinutes();
   const todayKey = dateKey(now);
 
@@ -876,11 +892,10 @@ export default function Planner() {
       return { start: dateKey(gs), end: dateKey(addDays(gs, 41)) };
     }
     if (view === "week") {
-      const ws = startOfWeek(anchor);
-      return { start: dateKey(ws), end: dateKey(addDays(ws, 6)) };
+      return { start: dateKey(anchor), end: dateKey(addDays(anchor, isMobile ? 2 : 6)) };
     }
     return { start: dateKey(anchor), end: dateKey(anchor) };
-  }, [view, anchor]);
+  }, [view, anchor, isMobile]);
 
   /* fetch any holiday years we don't yet have cached for the visible range */
   useEffect(() => {
@@ -951,14 +966,15 @@ export default function Planner() {
   const layoutFor = useCallback((key) => {
     const evs = (timedByDay[key] || []).map((occ) => ({ id: "e_" + occ.renderKey, start: occ.dispStart, end: Math.min(occ.dispEnd, 1440), ref: occ, kind: "event" }));
     const tks = (tasksByDay[key] || []).map((it) => ({ id: "t_" + it.task.id, start: it.start, end: Math.min(it.end, 1440), ref: it, kind: "task" }));
-    const laid = layoutDay([...evs, ...tks]);
+    const clearance = Math.max(8, Math.round((26 / hourH) * 60));
+    const laid = layoutDay([...evs, ...tks], clearance);
     const byId = {};
     for (const l of laid) byId[l.item.id] = l;
     return {
       events: evs.map((e) => ({ occ: e.ref, lay: byId[e.id] })),
       tasks: tks.map((t) => ({ item: t.ref, lay: byId[t.id] })),
     };
-  }, [timedByDay, tasksByDay]);
+  }, [timedByDay, tasksByDay, hourH]);
 
   /* ---------- mutations ---------- */
   const toggleTask = useCallback((id) => {
@@ -1009,11 +1025,11 @@ export default function Planner() {
     });
   }, []);
 
+  const visibleN = view === "day" ? 1 : isMobile ? 3 : 7;
   const days = useMemo(() => {
-    if (view === "week") return Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i));
-    if (view === "day") return [anchor];
-    return [];
-  }, [view, anchor]);
+    if (view === "month") return [];
+    return Array.from({ length: visibleN }, (_, i) => addDays(anchor, i));
+  }, [view, anchor, visibleN]);
 
   /* ---------- drag / resize existing blocks ---------- */
   const beginDrag = useCallback((e, target, mode) => {
@@ -1167,14 +1183,25 @@ export default function Planner() {
   }, [categories]);
 
   const shift = useCallback((dir) => {
+    lastDirRef.current = dir;
     setAnchor((a) => {
       if (view === "month") { const d = new Date(a); d.setMonth(d.getMonth() + dir); return d; }
-      return addDays(a, dir * (view === "week" ? 7 : 1));
+      return addDays(a, dir * (view === "week" ? (isMobile ? 3 : 7) : 1));
+    });
+  }, [view, isMobile]);
+
+  /* one day at a time — used by side-scroll/swipe so days snap along */
+  const stepDay = useCallback((dir) => {
+    lastDirRef.current = dir;
+    setAnchor((a) => {
+      if (view === "month") { const d = new Date(a); d.setMonth(d.getMonth() + dir); return d; }
+      return addDays(a, dir);
     });
   }, [view]);
 
-  /* ---------- multitouch: pinch to zoom (vertical) / switch view (horizontal),
-     plus horizontal swipe to move day-by-day ---------- */
+  /* ---------- multitouch: pinch to zoom (vertical, anchored at the pinch
+     centre) / switch view (horizontal), plus horizontal swipe that snaps
+     day-by-day as the finger keeps moving ---------- */
   const onGridPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch") return;
     const g = gestureRef.current || (gestureRef.current = { pts: new Map() });
@@ -1187,9 +1214,16 @@ export default function Planner() {
       g.startHourH = hourHRef.current;
       g.axis = null;
       g.pinching = true;
+      /* remember which minute sits under the pinch centre so zoom keeps it fixed */
+      if (scrollRef.current) {
+        const rect = scrollRef.current.getBoundingClientRect();
+        const centerY = (a.y + b.y) / 2 - rect.top;
+        g.anchorMinute = ((scrollRef.current.scrollTop + centerY) / g.startHourH) * 60;
+        g.anchorOffsetY = centerY;
+      }
       if (dragRef.current) { dragRef.current = null; setCreatePreview(null); setDragPreview(null); } /* cancel single-finger drag/create */
     } else if (g.pts.size === 1) {
-      g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swiped = false;
+      g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swipeAxis = null;
     }
 
     const move = (ev) => {
@@ -1207,7 +1241,9 @@ export default function Planner() {
         }
         if (g.axis === "v") {
           const ratio = dy / (g.startDy || 1);
-          setHourH(Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * ratio))));
+          const next = Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * ratio)));
+          if (g.anchorMinute != null) zoomAnchor.current = { minute: g.anchorMinute, offsetY: g.anchorOffsetY };
+          setHourH(next);
         } else if (g.axis === "h" && !g.fired) {
           const ratio = dx / (g.startDx || 1);
           if (ratio < 0.6) { g.fired = true; zoomView(-1); }       /* pinch in -> more detail */
@@ -1215,9 +1251,14 @@ export default function Planner() {
         }
       } else if (g.pts.size === 1 && !g.pinching) {
         const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
-        if (!g.swiped && Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy) * 1.6) {
-          g.swiped = true;
-          shift(dx < 0 ? 1 : -1); /* swipe left -> forward */
+        if (!g.swipeAxis && (Math.abs(dx) > 24 || Math.abs(dy) > 24)) g.swipeAxis = Math.abs(dx) > Math.abs(dy) * 1.4 ? "h" : "v";
+        if (g.swipeAxis === "h") {
+          ev.preventDefault();
+          const STEP = 60; /* px of horizontal travel per day */
+          if (Math.abs(dx) >= STEP) {
+            stepDay(dx < 0 ? 1 : -1); /* swipe left -> forward */
+            g.swipeX0 = ev.clientX;   /* re-arm so a long drag keeps snapping day-by-day */
+          }
         }
       }
     };
@@ -1234,14 +1275,31 @@ export default function Planner() {
     window.addEventListener("pointermove", move, { passive: false });
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
-  }, [zoomView, shift]);
+  }, [zoomView, stepDay]);
 
-  /* desktop: ctrl/cmd + wheel to zoom the time axis */
+  /* desktop wheel: ctrl/cmd+scroll zooms (anchored at the cursor),
+     plain horizontal scroll (trackpad / shift+wheel) pages the days along */
   const onGridWheel = useCallback((e) => {
-    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      if (scrollRef.current) {
+        const rect = scrollRef.current.getBoundingClientRect();
+        const offsetY = e.clientY - rect.top;
+        const h = hourHRef.current;
+        zoomAnchor.current = { minute: ((scrollRef.current.scrollTop + offsetY) / h) * 60, offsetY };
+      }
+      setHourH((h) => Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, h * (e.deltaY < 0 ? 1.1 : 0.9)))));
+      return;
+    }
+    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    if (!dx) return;
     e.preventDefault();
-    setHourH((h) => Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, h * (e.deltaY < 0 ? 1.1 : 0.9)))));
-  }, []);
+    wheelAccum.current += dx;
+    if (Math.abs(wheelAccum.current) >= 90) {
+      stepDay(wheelAccum.current > 0 ? 1 : -1);
+      wheelAccum.current = 0;
+    }
+  }, [stepDay]);
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -1249,11 +1307,29 @@ export default function Planner() {
     return () => el.removeEventListener("wheel", onGridWheel);
   }, [onGridWheel, loaded, view]);
 
+  /* slide animation when the visible days move */
+  const firstAnchor = useRef(true);
+  useEffect(() => {
+    if (firstAnchor.current) { firstAnchor.current = false; return; }
+    const el = view === "month" ? null : gridBodyRef.current;
+    if (!el) return;
+    const cls = lastDirRef.current > 0 ? "rl-slide-l" : "rl-slide-r";
+    el.classList.remove("rl-slide-l", "rl-slide-r");
+    void el.offsetWidth; /* restart the animation */
+    el.classList.add(cls);
+    const t = setTimeout(() => el.classList.remove(cls), 240);
+    return () => clearTimeout(t);
+  }, [anchor]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const title = view === "month" ? `${MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}`
-    : view === "day" ? `${MONTHS[anchor.getMonth()]} ${anchor.getDate()}, ${anchor.getFullYear()}`
-    : (() => { const ws = startOfWeek(anchor); const we = addDays(ws, 6);
-        return ws.getMonth() === we.getMonth() ? `${MONTHS[ws.getMonth()]} ${ws.getFullYear()}` : `${MONTHS[ws.getMonth()].slice(0, 3)} – ${MONTHS[we.getMonth()].slice(0, 3)} ${we.getFullYear()}`; })();
+
+  const title = (() => {
+    if (view === "month") return `${MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}`;
+    if (view === "day") return isMobile ? `${MONTHS[anchor.getMonth()].slice(0, 3)} ${anchor.getDate()}` : `${MONTHS[anchor.getMonth()]} ${anchor.getDate()}, ${anchor.getFullYear()}`;
+    const we = addDays(anchor, (isMobile ? 3 : 7) - 1);
+    const m1 = MONTHS[anchor.getMonth()].slice(0, 3), m2 = MONTHS[we.getMonth()].slice(0, 3);
+    if (isMobile) return anchor.getMonth() === we.getMonth() ? `${m1} ${anchor.getDate()} – ${we.getDate()}` : `${m1} ${anchor.getDate()} – ${m2} ${we.getDate()}`;
+    return anchor.getMonth() === we.getMonth() ? `${MONTHS[anchor.getMonth()]} ${anchor.getFullYear()}` : `${m1} – ${m2} ${we.getFullYear()}`;
+  })();
 
   const pendingTasks = tasks.filter((t) => !t.done).sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
   const doneTasks = tasks.filter((t) => t.done).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
@@ -1269,10 +1345,13 @@ export default function Planner() {
 
   return (
     <ThemeCtx.Provider value={T}>
-      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
+      <style>{`.rl-hover:hover{background:${T.hover}} html{color-scheme:${mode}} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-thumb{background:${T.mode === "dark" ? "#3a3a3e" : "#c9c9ce"};border-radius:5px;border:2px solid ${T.surface}} ::-webkit-scrollbar-track{background:transparent} @keyframes rlFade{0%{opacity:0;transform:scale(0.985)}100%{opacity:1;transform:scale(1)}} .rl-fade{animation:rlFade 0.26s cubic-bezier(0.22,0.61,0.36,1)} @keyframes rlSlideL{0%{opacity:0.5;transform:translateX(26px)}100%{opacity:1;transform:none}} @keyframes rlSlideR{0%{opacity:0.5;transform:translateX(-26px)}100%{opacity:1;transform:none}} .rl-slide-l{animation:rlSlideL 0.22s ease-out} .rl-slide-r{animation:rlSlideR 0.22s ease-out} @media (prefers-reduced-motion: reduce){.rl-slide-l,.rl-slide-r{animation:none}} @media (prefers-reduced-motion: reduce){.rl-fade{animation:none}}`}</style>
       <div className="h-screen flex select-none" style={{ fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", background: T.bg, color: T.text, colorScheme: mode }}>
-        {/* ---------- sidebar ---------- */}
-        <div className="w-72 flex-shrink-0 flex flex-col border-r" style={{ borderColor: T.border, background: T.surface }}>
+        {/* ---------- sidebar (drawer on mobile) ---------- */}
+        {isMobile && drawerOpen && <div className="fixed inset-0 z-30" style={{ background: "rgba(0,0,0,0.45)" }} onClick={() => setDrawerOpen(false)} />}
+        {(!isMobile || drawerOpen) && (
+        <div className={isMobile ? "fixed inset-y-0 left-0 z-40 w-72 flex flex-col border-r" : "w-72 flex-shrink-0 flex flex-col border-r"}
+          style={{ borderColor: T.border, background: T.surface, boxShadow: isMobile ? T.shadow : "none" }}>
           <div className="px-4 pt-4 pb-2 flex items-center justify-between">
             <h2 className="font-bold text-lg flex items-center gap-1.5" style={{ color: T.text }}>
               <span aria-hidden="true" style={{ color: T.accent }}>↻</span>Rollover
@@ -1328,6 +1407,7 @@ export default function Planner() {
           <div className="px-4 py-3 border-t flex flex-col gap-1.5" style={{ borderColor: T.border }}>
             <button onClick={() => setShowCats(true)} className="text-xs font-medium text-left" style={{ color: T.accent }}>⚙ Hours & categories</button>
             <button onClick={() => setShowHolidays(true)} className="text-xs font-medium text-left" style={{ color: T.accent }}>🎌 Holiday calendars{holidayCals.length ? ` (${holidayCals.length})` : ""}</button>
+            {isMobile && <button onClick={() => setMode(mode === "dark" ? "light" : "dark")} className="text-xs font-medium text-left" style={{ color: T.accent }}>{mode === "dark" ? "☀ Light mode" : "☾ Dark mode"}</button>}
             {user ? (
               <div className="flex items-center justify-between">
                 <span className="text-[11px] truncate" style={{ color: T.dim }}>{user.email}</span>
@@ -1336,11 +1416,17 @@ export default function Planner() {
             ) : <button onClick={openLogin} className="text-xs font-medium text-left" style={{ color: T.accent }}>Sign in to sync across devices</button>}
           </div>
         </div>
+        )}
 
         {/* ---------- calendar ---------- */}
         <div className="flex-1 flex flex-col min-w-0" style={{ background: T.surface }}>
-          <div className="flex items-center gap-2 px-4 py-2.5 border-b" style={{ borderColor: T.border }}>
-            <h1 className="font-bold text-lg mr-2" style={{ color: T.text }}>{title}</h1>
+          <div className={`flex items-center border-b ${isMobile ? "gap-1 px-2 py-2" : "gap-2 px-4 py-2.5"}`} style={{ borderColor: T.border }}>
+            {isMobile && (
+              <button onClick={() => setDrawerOpen(true)} className="relative rounded-lg px-2 py-1.5 text-sm" style={{ background: T.surface2, color: T.text }} aria-label="Open tasks">
+                ☰{pendingTasks.length > 0 && <span className="absolute -top-1 -right-1 rounded-full text-[9px] font-bold text-white flex items-center justify-center" style={{ background: T.danger, minWidth: 15, height: 15, padding: "0 3px" }}>{pendingTasks.length}</span>}
+              </button>
+            )}
+            <h1 className={`font-bold ${isMobile ? "text-sm mr-1" : "text-lg mr-2"}`} style={{ color: T.text }}>{title}</h1>
             <div className="flex rounded-lg overflow-hidden text-xs font-medium" style={{ background: T.surface2 }}>
               {["day", "week", "month"].map((v) => (
                 <button key={v} onClick={() => changeView(v)} className="px-3 py-1.5 capitalize"
@@ -1348,16 +1434,17 @@ export default function Planner() {
               ))}
             </div>
             <div className="flex-1" />
-            <button onClick={() => setMode(mode === "dark" ? "light" : "dark")} className="px-2 py-1 text-sm rounded-md" style={{ color: T.dim }} title="Toggle dark mode" aria-label="Toggle dark mode">{mode === "dark" ? "☀" : "☾"}</button>
-            <button onClick={() => shift(-1)} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Previous">‹</button>
-            <button onClick={() => setAnchor(new Date())} className="px-2.5 py-1 text-xs font-medium" style={{ color: T.accent }}>Today</button>
-            <button onClick={() => shift(1)} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Next">›</button>
+            {!isMobile && <button onClick={() => setMode(mode === "dark" ? "light" : "dark")} className="px-2 py-1 text-sm rounded-md" style={{ color: T.dim }} title="Toggle dark mode" aria-label="Toggle dark mode">{mode === "dark" ? "☀" : "☾"}</button>}
+            {!isMobile && <button onClick={() => { lastDirRef.current = -1; shift(-1); }} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Previous">‹</button>}
+            <button onClick={() => { lastDirRef.current = 1; setAnchor(new Date()); }} className="px-2.5 py-1 text-xs font-medium" style={{ color: T.accent }}>Today</button>
+            {!isMobile && <button onClick={() => { lastDirRef.current = 1; shift(1); }} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Next">›</button>}
             <button onClick={() => setItemDraft({ itemType: "event", date: dateKey(anchor), start: Math.min(Math.ceil(nowMin / 30) * 30, 23 * 60), end: Math.min(Math.ceil(nowMin / 30) * 30 + 60, 1440), color: "blue", tz: deviceTz })}
-              className="ml-1 rounded-lg text-white font-semibold text-xs px-3 py-1.5" style={{ background: T.accent }}>＋ New</button>
+              className={`ml-1 rounded-lg text-white font-semibold text-xs ${isMobile ? "px-2.5 py-1.5" : "px-3 py-1.5"}`} style={{ background: T.accent }}>{isMobile ? "＋" : "＋ New"}</button>
           </div>
 
           {view === "month" ? (
-            <div className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : ""}`}>
+            <div key={`${anchor.getFullYear()}-${anchor.getMonth()}`} className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : lastDirRef.current > 0 ? "rl-slide-l" : "rl-slide-r"}`}
+              onPointerDown={onGridPointerDown} style={{ touchAction: "pan-y" }}>
               <MonthGrid anchor={anchor} now={now} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
                 onOpenDay={(d) => { setAnchor(d); changeView("day"); }} />
             </div>

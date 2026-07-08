@@ -53,9 +53,9 @@ Runs a Vitest + Testing Library suite that mounts the app, adds a task,
 switches views, and opens the editor — asserting no runtime errors.
 
 ## Zoom & gestures
-- Pinch vertically to make the day more detailed (taller hours); pinch/spread
+- Pinch vertically to zoom the day (anchored at your fingers); pinch/spread
   horizontally to move between day -> week -> month
-- Swipe left/right (one finger) to move forward/back a day/week/month
+- Swipe or side-scroll (trackpad / shift+wheel) to roll the days along, snapping day-by-day; works in every view
 - Desktop: Ctrl/Cmd + scroll wheel zooms the time axis
 - Smooth cross-fade when switching views
 
@@ -70,3 +70,8 @@ High/Medium/Low control colour and scheduling order (High fills free slots
 first). A task's priority automatically escalates as its deadline nears
 (<=3 days -> at least Medium, <=1 day -> High), so urgent work rises to the
 top of the queue on its own.
+
+## Mobile
+On screens under 640px the task list becomes a slide-out drawer (top-left
+button, badge shows pending count) so the calendar gets the full width, and
+week view shows a rolling 3-day window instead of 7 days.
