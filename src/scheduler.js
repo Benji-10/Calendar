@@ -70,6 +70,7 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
   const snapUp = (m) => Math.ceil(m / gran) * gran;
   const todayKey = dateKey(now);
   const endKey = addDaysKey(todayKey, HORIZON);
+  const nowMin = now.getHours() * 60 + now.getMinutes();
 
   const busyByDay = {};
   for (const o of expandOccurrences(events, todayKey, endKey, displayTz)) {
@@ -80,22 +81,36 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
   const catById = {};
   for (const c of categories) catById[c.id] = c;
   const fallbackCat = categories[0];
-
-  /* priority populates first, then earlier deadline, then age */
-  const pending = tasks
-    .filter((t) => !t.done)
-    .sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority - b.priority;
-      const da = a.deadline || "9999-12-31";
-      const db = b.deadline || "9999-12-31";
-      if (da !== db) return da < db ? -1 : 1;
-      return a.createdAt - b.createdAt;
-    });
-
-  const nowMin = now.getHours() * 60 + now.getMinutes();
   const placed = {};
 
-  for (const t of pending) {
+  /* Pass 1 — tasks with a user-chosen time stay put while the slot is
+     still ahead, or forever if auto-reschedule is off. Only a missed
+     slot with auto-reschedule on falls through to the auto pass. */
+  const autoQueue = [];
+  for (const t of tasks.filter((x) => !x.done)) {
+    const s = t.scheduledAt;
+    if (s) {
+      const end = s.start + t.duration;
+      const stillAhead = s.date > todayKey || (s.date === todayKey && end > nowMin);
+      if (stillAhead || t.autoReschedule === false) {
+        placed[t.id] = { date: s.date, start: s.start, end, pinned: true };
+        if (s.date >= todayKey && s.date <= endKey) (busyByDay[s.date] ||= []).push([s.start, Math.min(end, 1440)]);
+        continue;
+      }
+    }
+    autoQueue.push(t);
+  }
+
+  /* Pass 2 — priority populates first, then earlier deadline, then age */
+  autoQueue.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    const da = a.deadline || "9999-12-31";
+    const db = b.deadline || "9999-12-31";
+    if (da !== db) return da < db ? -1 : 1;
+    return a.createdAt - b.createdAt;
+  });
+
+  for (const t of autoQueue) {
     const cat = catById[t.category] || fallbackCat;
     if (!cat) continue;
     for (let i = 0; i < HORIZON; i++) {
@@ -117,7 +132,7 @@ export function scheduleTasks(tasks, events, categories, now, displayTz) {
       }
       if (!fits && cursor < winEnd && winEnd - cursor >= t.duration) fits = true;
       if (fits) {
-        const slot = { date: k, start: cursor, end: cursor + t.duration };
+        const slot = { date: k, start: cursor, end: cursor + t.duration, pinned: false };
         placed[t.id] = slot;
         (busyByDay[k] ||= []).push([slot.start, slot.end]);
         break;

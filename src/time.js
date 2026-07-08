@@ -62,9 +62,12 @@ const wallParts = (utcMs, tz) => {
 };
 
 export function tzOffsetMs(tz, utcMs) {
-  const p = wallParts(utcMs, tz);
+  /* Intl gives whole seconds; snap the input to a second boundary so the
+     offset is exact instead of carrying millisecond residue */
+  const t = Math.floor(utcMs / 1000) * 1000;
+  const p = wallParts(t, tz);
   const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
-  return asUtc - utcMs;
+  return asUtc - t;
 }
 
 /* wall clock (date + minutes) in tz -> absolute UTC ms (two-pass for DST) */
@@ -92,7 +95,7 @@ export function timeZoneList() {
 
 /* short UTC-offset label for a zone at a given instant, e.g. "GMT+8" */
 export function tzLabel(tz, utcMs = Date.now()) {
-  const off = tzOffsetMs(tz, utcMs) / 60000;
+  const off = Math.round(tzOffsetMs(tz, utcMs) / 60000);
   const sign = off >= 0 ? "+" : "-";
   const a = Math.abs(off);
   return `GMT${sign}${Math.floor(a / 60)}${a % 60 ? ":" + pad(a % 60) : ""}`;

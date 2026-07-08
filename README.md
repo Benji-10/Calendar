@@ -35,10 +35,14 @@ existing local data is pushed up to your account automatically.
   High priority fills slots before Medium before Low
 - Time categories: each task rolls over only within its category's hours
   (Work defaults to Mon-Fri 9:00-19:00); per-date exceptions for holidays
-- Drag events to move them, pull top/bottom edges to resize (long-press on mobile)
+- Drag empty grid to create; drag blocks to move (tasks get pinned); pull edges to resize (long-press on mobile)
 - All-day events pinned to the top row; repeat rules (daily/weekdays/weekly/monthly/yearly)
   with per-day delete; title autosuggest for events used 3+ times
-- Location search (OpenStreetMap) with open-in-Google-Maps links; picking a
+- Location search (Photon/OSM, fast autocomplete) with open-in-Google-Maps links; picking a
   location suggests the event's timezone
 - Timezone-aware: events store absolute time + their own zone and are shown
   in the device's local time
+- Dark mode by default (toggle in the header); completed tasks stay on the
+  calendar in green so the day's accomplishments remain visible
+- Tasks can be given an explicit time ("Pick a time") with a per-task
+  auto-reschedule switch: on = missed tasks roll forward, off = stay put
