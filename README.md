@@ -1,19 +1,44 @@
-# Task Planner (auto-scheduling checklist + calendar)
+# Rollover — auto-scheduling checklist + calendar
+
+Tasks roll forward into your next free slot until you check them off.
+Events are fixed; tasks flow around them inside per-category hours.
 
 ## Run locally
     npm install
     npm run dev
 
-## Deploy to Netlify
+Note: sign-in only works against a deployed Netlify site. For local dev
+against your live Identity instance, change `netlifyIdentity.init()` in
+`src/storage.js` to `netlifyIdentity.init({ APIUrl: "https://YOUR-SITE.netlify.app/.netlify/identity" })`.
+Signed-out mode (localStorage) works everywhere with no setup.
 
-Option A — Netlify Drop (no account setup needed beyond login):
-1. Run `npm install && npm run build`
-2. Drag the generated `dist/` folder onto https://app.netlify.com/drop
-   (A pre-built `dist/` is already included in this zip, so you can skip the build and drag it straight in.)
-
-Option B — Git-connected site:
+## Deploy to Netlify (Git-connected — required for accounts)
 1. Push this folder to a GitHub repo
-2. In Netlify: Add new site -> Import from Git -> pick the repo
-3. The included `netlify.toml` sets the build command (`npm run build`) and publish dir (`dist`) automatically
+2. Netlify: Add new site -> Import from Git -> pick the repo
+   (netlify.toml already configures the build and the serverless function)
 
-Data is stored in the browser's localStorage under the key `planner-data-v1` (per-browser, per-device).
+## Enable accounts + Neon
+1. Neon: create a free project at neon.tech, copy the connection string
+   (postgresql://...@...neon.tech/neondb?sslmode=require)
+2. Netlify: Site configuration -> Environment variables -> add
+   DATABASE_URL = that connection string
+3. Netlify: Site configuration -> Identity -> Enable Identity
+   (set Registration to invite-only and invite yourself, unless you want open signup)
+4. Redeploy. Sign in via the sidebar; the function auto-creates its one
+   table (planner_data: user_id, data jsonb, updated_at) on first request.
+
+Signed out, data stays in the browser's localStorage. On first sign-in,
+existing local data is pushed up to your account automatically.
+
+## Features
+- Auto-scheduler: unchecked tasks reflow to the next open slot every 30s;
+  High priority fills slots before Medium before Low
+- Time categories: each task rolls over only within its category's hours
+  (Work defaults to Mon-Fri 9:00-19:00); per-date exceptions for holidays
+- Drag events to move them, pull top/bottom edges to resize (long-press on mobile)
+- All-day events pinned to the top row; repeat rules (daily/weekdays/weekly/monthly/yearly)
+  with per-day delete; title autosuggest for events used 3+ times
+- Location search (OpenStreetMap) with open-in-Google-Maps links; picking a
+  location suggests the event's timezone
+- Timezone-aware: events store absolute time + their own zone and are shown
+  in the device's local time
