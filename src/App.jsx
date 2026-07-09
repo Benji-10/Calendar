@@ -7,6 +7,7 @@ import {
   wallToUtc, utcToWall, timeZoneList, tzLabel,
 } from "./time.js";
 import { expandOccurrences, scheduleTasks, windowFor, layoutDay, effectivePriority } from "./scheduler.js";
+import { parseICS } from "./ics.js";
 import { initIdentity, openLogin, doLogout, loadData, saveData, STORE_KEY } from "./storage.js";
 import { HOLIDAY_CALENDARS, calByCode, guessCountry, holidayFeedUrl } from "./holidays.js";
 
@@ -2298,6 +2299,11 @@ export default function Planner() {
                 style={{ color: T.accent }}>
                 <Icon name="chevL" size={14} sw={2.6} />{backLabel}
               </button>
+            )}
+            {view === "month" && (
+              <span className={`font-bold px-0.5 ${isMobile ? "text-base" : "text-lg"}`} style={{ color: T.text }}>
+                {MONTHS[anchor.getMonth()]}
+              </span>
             )}
             <div className="flex-1" />
             <button onClick={() => setShowStats(true)} className="px-2 py-1 rounded-md" style={{ color: T.dim }} title="Progress" aria-label="Progress stats"><Icon name="chart" size={15} /></button>
