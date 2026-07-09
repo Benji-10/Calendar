@@ -176,3 +176,19 @@ your preference. Feed events are read-only, support all-day/multi-day/timed
 entries and FREQ=YEARLY recurrence (birthday calendars). Personal calendars
 group your own events (assign in the event editor) and toggle on/off.
 Note: feed fetching needs the deployed Netlify function (not vite dev).
+
+## Data-safety contract
+Every server write that changes the blob first snapshots the previous
+version into `planner_history` (newest 20 kept per user), so no bug or
+migration can put data more than one restore away. Schema changes are
+additive only — the client's migrate() fills defaults on read; any future
+breaking change is done as query -> transform -> reinsert, never a
+destructive rewrite. To inspect or roll back, from the app's console:
+
+  const jwt = await netlifyIdentity.currentUser().jwt();
+  // list versions:
+  await (await fetch('/.netlify/functions/data?history=1', { headers: { Authorization: 'Bearer ' + jwt } })).json();
+  // restore one:
+  await fetch('/.netlify/functions/data', { method: 'PUT', headers: { Authorization: 'Bearer ' + jwt, 'Content-Type': 'application/json' }, body: JSON.stringify({ restore: ID }) });
+
+Then reload; the periodic pull picks the restored blob up everywhere.
