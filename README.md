@@ -167,3 +167,12 @@ release), so it tracks fingers at full frame rate.
 - Signed-in devices re-pull every 60s and whenever the tab/app regains focus
   or comes back online, skipping pulls within 5s of a local push so devices
   never fight their own edits.
+
+## Calendars (subscriptions + personal)
+Sidebar -> Calendars: subscribe to any public .ics / webcal feed (fetched
+through the ics Netlify function every 12h, cached per device) — e.g. an
+official holidays feed if the built-in observed-date holidays don't match
+your preference. Feed events are read-only, support all-day/multi-day/timed
+entries and FREQ=YEARLY recurrence (birthday calendars). Personal calendars
+group your own events (assign in the event editor) and toggle on/off.
+Note: feed fetching needs the deployed Netlify function (not vite dev).

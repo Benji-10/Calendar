@@ -96,8 +96,10 @@ function migrate(d) {
     out.categories = cats;
   }
   out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, dependsOn: null, waitingOn: null, notes: "", checklist: [], ...t }));
-  out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, timeOff: false, exceptions: [], location: null, notes: "", checklist: [], ...e }));
+  out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, timeOff: false, exceptions: [], location: null, notes: "", checklist: [], calId: null, ...e }));
   out.waiting = d.waiting || [];
+  out.icsCals = d.icsCals || [];
+  out.userCals = d.userCals || [];
   out.holidayCals = d.holidayCals || [];
   out.holidayCache = d.holidayCache || {};
   out.country = d.country || guessCountry();
@@ -180,7 +182,7 @@ const inputStyle = (T) => ({ background: T.input, color: T.text, border: "1px so
 const selStyle = (T) => ({ background: T.surface2, color: T.text, border: `1px solid ${T.border}` });
 
 /* ---------- unified event / task editor ---------- */
-function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSaveEvent, onSaveTask, onDeleteSeries, onDeleteOccurrence, onDeleteTask, onClose }) {
+function ItemModal({ draft, events, tasks = [], waiting = [], userCals = [], categories, onSaveEvent, onSaveTask, onDeleteSeries, onDeleteOccurrence, onDeleteTask, onClose }) {
   const T = useT();
   const isNew = !draft.id;
   const [itemType, setItemType] = useState(draft.itemType || "event");
@@ -216,6 +218,7 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
   const [autoReschedule, setAutoReschedule] = useState(draft.autoReschedule !== false);
   const [dependsOn, setDependsOn] = useState(draft.dependsOn || "");
   const [waitingFor, setWaitingFor] = useState(draft.waitingOn || "");
+  const [calId, setCalId] = useState(draft.calId || "");
   const [notes, setNotes] = useState(draft.notes || "");
   const [checklist, setChecklist] = useState(() => (draft.checklist || []).map((c) => ({ ...c })));
   const [newCheck, setNewCheck] = useState("");
@@ -338,7 +341,7 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
         start: timedStart, end: timedEnd,
         tz, color, location, repeat,
         repeatUntil: repeat !== "none" && repeatUntil ? repeatUntil : null,
-        notes, checklist,
+        notes, checklist, calId: calId || null,
       });
     } else {
       onSaveTask({
@@ -428,6 +431,14 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
                   </div>
                 </Row>
               </>
+            )}
+            {userCals.length > 0 && (
+              <Row label="Calendar">
+                <select value={calId} onChange={(e) => setCalId(e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)}>
+                  <option value="">Default</option>
+                  {userCals.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </Row>
             )}
             <Row label="Repeat">
               <select value={repeat} onChange={(e) => setRepeat(e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)}>
@@ -1067,17 +1078,62 @@ function StatsModal({ tasks, events, categories, onClose }) {
 }
 
 /* ---------- holidays picker ---------- */
-function HolidaysModal({ selected, country, onSave, onClose }) {
+function HolidaysModal({ selected, country, icsCals, onAddIcs, onToggleIcs, onRemoveIcs, icsCache, userCals, onAddUserCal, onToggleUserCal, onRemoveUserCal, onSave, onClose }) {
   const T = useT();
   const [sel, setSel] = useState(selected);
   const [ctry, setCtry] = useState(country);
+  const [icsUrl, setIcsUrl] = useState("");
+  const [icsName, setIcsName] = useState("");
+  const [calName, setCalName] = useState("");
   const toggle = (code) => setSel((s) => (s.includes(code) ? s.filter((x) => x !== code) : [...s, code]));
+  const addIcs = () => {
+    const url = icsUrl.trim();
+    if (!url) return;
+    let name = icsName.trim();
+    if (!name) { try { name = new URL(url.replace(/^webcal:/i, "https:")).hostname.replace(/^www\./, ""); } catch { name = "Calendar"; } }
+    onAddIcs(name, url);
+    setIcsUrl(""); setIcsName("");
+  };
+  const addCal = () => { if (calName.trim()) { onAddUserCal(calName.trim()); setCalName(""); } };
+  const CalRow = ({ on, color, name, tag, onToggle, onRemove }) => (
+    <div className="flex items-center gap-2 py-1">
+      <Check checked={on} onToggle={onToggle} color={ACCENTS[color] || T.accent} />
+      <span className="rounded-full flex-shrink-0" style={{ width: 8, height: 8, background: ACCENTS[color] || T.accent }} />
+      <span className="flex-1 text-sm truncate" style={{ color: on ? T.text : T.dim }}>{name}</span>
+      {tag && <span className="text-[10px]" style={{ color: T.danger }}>{tag}</span>}
+      <button onClick={onRemove} className="text-xs px-1" style={{ color: T.faint }} aria-label="Remove">✕</button>
+    </div>
+  );
   return (
-    <Modal title="Holiday Calendars" onClose={onClose} wide
+    <Modal title="Calendars" onClose={onClose} wide
       footer={<button onClick={() => onSave(sel, ctry)} className="px-4 py-1.5 rounded-lg text-sm font-semibold text-white" style={{ background: T.accent }}>Save</button>}>
-      <p className="text-xs mb-3" style={{ color: T.dim }}>
-        Add public holidays as all-day events. Your country sets the default time zone for new events too.
-      </p>
+      <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: T.dim }}>My calendars</div>
+      {userCals.map((c) => (
+        <CalRow key={c.id} on={c.enabled} color={c.color} name={c.name}
+          onToggle={() => onToggleUserCal(c.id)} onRemove={() => onRemoveUserCal(c.id)} />
+      ))}
+      <div className="flex gap-1.5 mb-4 mt-1">
+        <input value={calName} onChange={(e) => setCalName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCal()}
+          placeholder="New calendar name" className="flex-1 rounded-lg px-3 py-1.5 text-sm min-w-0" style={inputStyle(T)} />
+        <button onClick={addCal} className="rounded-lg text-white font-bold text-sm px-2.5" style={{ background: T.accent }}>＋</button>
+      </div>
+
+      <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: T.dim }}>Subscriptions (.ics)</div>
+      {icsCals.map((c) => (
+        <CalRow key={c.id} on={c.enabled} color={c.color} name={c.name} tag={icsCache[c.id]?.error ? "couldn't load" : null}
+          onToggle={() => onToggleIcs(c.id)} onRemove={() => onRemoveIcs(c.id)} />
+      ))}
+      <div className="flex flex-col gap-1.5 mb-4 mt-1">
+        <input value={icsUrl} onChange={(e) => setIcsUrl(e.target.value)}
+          placeholder="https://…ics or webcal://…" className="rounded-lg px-3 py-1.5 text-sm" style={inputStyle(T)} />
+        <div className="flex gap-1.5">
+          <input value={icsName} onChange={(e) => setIcsName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addIcs()}
+            placeholder="Name (optional)" className="flex-1 rounded-lg px-3 py-1.5 text-sm min-w-0" style={inputStyle(T)} />
+          <button onClick={addIcs} className="rounded-lg text-white font-bold text-sm px-2.5" style={{ background: T.accent }}>＋</button>
+        </div>
+      </div>
+
+      <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: T.dim }}>Public holidays</div>
       <Row label="Country">
         <select value={ctry} onChange={(e) => setCtry(e.target.value)} className="rounded-md px-2 py-1 text-sm" style={selStyle(T)}>
           {HOLIDAY_CALENDARS.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
@@ -1106,7 +1162,7 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   const T = useT();
   const isTask = detail.type === "task";
   const t = isTask ? tasks.find((x) => x.id === detail.id) : null;
-  const ev = !isTask ? events.find((x) => x.id === detail.id) : null;
+  const ev = !isTask ? (events.find((x) => x.id === detail.id) || detail.snap || null) : null;
   const item = t || ev;
   useEffect(() => { if (!item) onBack(); }, [item, onBack]);
   if (!item) return null;
@@ -1117,7 +1173,7 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   const waitItem = isTask && t.waitingOn ? waiting.find((w) => w.id === t.waitingOn) : null;
   const cl = item.checklist || [];
   const dateStr = (k) => `${DOW[dowOfKey(k)]} ${+k.slice(8)} ${MONTHS[+k.slice(5, 7) - 1].slice(0, 3)}`;
-  const editable = !ev?.holiday;
+  const editable = !ev?.holiday && !ev?.icsCal;
 
   const InfoRow = ({ icon, children }) => (
     <div className="flex items-start gap-3 py-2">
@@ -1161,6 +1217,7 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
             )}
             {ev.timeOff && <InfoRow icon="umbrella">Time off — tasks are not scheduled on this day</InfoRow>}
             {ev.holiday && <InfoRow icon="flag">Public holiday (from your holiday calendar)</InfoRow>}
+            {ev.icsCal && <InfoRow icon="flag">From a subscribed calendar (read-only)</InfoRow>}
           </>
         )}
 
@@ -1272,6 +1329,11 @@ export default function Planner() {
   const [events, setEvents] = useState([]);
   const [categories, setCategories] = useState(DEFAULT_CATEGORIES);
   const [waiting, setWaiting] = useState([]);
+  const [icsCals, setIcsCals] = useState([]);
+  const [userCals, setUserCals] = useState([]);
+  const [icsCache, setIcsCache] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("rollover-ics-cache-v1")) || {}; } catch { return {}; }
+  });
   const [holidayCals, setHolidayCals] = useState([]);
   const [holidayCache, setHolidayCache] = useState({});
   const [country, setCountry] = useState(() => guessCountry());
@@ -1354,13 +1416,13 @@ export default function Planner() {
         if (d) {
           const m = migrate(d);
           setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-          setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
+          setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
         } else if (user) {
           const raw = localStorage.getItem(STORE_KEY);
           if (raw) {
             const m = migrate(JSON.parse(raw));
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
             saveData(user, m).catch(() => {});
           }
         }
@@ -1373,7 +1435,7 @@ export default function Planner() {
           if (raw && alive) {
             const m = migrate(JSON.parse(raw));
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
           }
         } catch { /* corrupt mirror — start empty */ }
       }
@@ -1391,17 +1453,17 @@ export default function Planner() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        await saveData(user && serverOkRef.current ? user : null, { tasks, events, categories, waiting, holidayCals, holidayCache, country });
+        await saveData(user && serverOkRef.current ? user : null, { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals });
         lastPushRef.current = Date.now();
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 1500);
       } catch (err) { setSaveState("error"); setSyncErr(explainSyncError(err)); }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [tasks, events, categories, waiting, holidayCals, holidayCache, country, loaded, user]);
+  }, [tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals, loaded, user]);
 
   /* ---------- periodic pull so all devices stay current ---------- */
-  dataRef.current = { tasks, events, categories, waiting, holidayCals, holidayCache, country };
+  dataRef.current = { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals };
   useEffect(() => {
     if (!user || !loaded) return;
     let busy = false;
@@ -1423,7 +1485,7 @@ export default function Planner() {
           if (JSON.stringify(m) !== JSON.stringify(migrate(dataRef.current))) {
             skipNextSave.current = true;
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
           }
         }
       } catch { /* transient — next tick retries */ }
@@ -1524,11 +1586,74 @@ export default function Planner() {
     return out;
   }, [holidayCals, holidayCache, range]);
 
+  /* subscribed ICS feeds: refresh stale ones (12h), persist the cache locally */
+  useEffect(() => {
+    if (!loaded) return;
+    let dead = false;
+    (async () => {
+      for (const cal of icsCals) {
+        if (!cal.enabled) continue;
+        const c = icsCache[cal.id];
+        if (c && Date.now() - (c.fetched || 0) < 12 * 3600e3) continue;
+        try {
+          const r = await fetch(`/.netlify/functions/ics?url=${encodeURIComponent(cal.url)}`);
+          if (!r.ok) throw new Error(String(r.status));
+          const text = await r.text();
+          const evs = parseICS(text);
+          if (!dead) setIcsCache((m) => ({ ...m, [cal.id]: { fetched: Date.now(), events: evs } }));
+        } catch {
+          if (!dead) setIcsCache((m) => ({ ...m, [cal.id]: { fetched: Date.now(), events: m[cal.id]?.events || [], error: true } }));
+        }
+      }
+    })();
+    return () => { dead = true; };
+  }, [icsCals, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    try { localStorage.setItem("rollover-ics-cache-v1", JSON.stringify(icsCache)); } catch { /* quota */ }
+  }, [icsCache]);
+
+  /* materialise subscribed entries as read-only pseudo events in range;
+     FREQ=YEARLY (birthdays) instantiates per year */
+  const icsEvents = useMemo(() => {
+    const out = [];
+    const p2 = (n) => String(n).padStart(2, "0");
+    const y0 = +range.start.slice(0, 4), y1 = +range.end.slice(0, 4);
+    for (const cal of icsCals) {
+      if (!cal.enabled) continue;
+      const c = icsCache[cal.id];
+      if (!c || !c.events) continue;
+      for (const e of c.events) {
+        const mk = (date, endDate, suffix = "") => out.push({
+          id: `ics_${cal.id}_${e.uid}${suffix}`, title: e.title, date, endDate,
+          allDay: e.allDay, start: e.start, end: e.end, tz: deviceTz, repeat: "none",
+          exceptions: [], location: null, color: cal.color, icsCal: cal.id, notes: "", checklist: [],
+        });
+        if (e.yearly) {
+          for (let y = y0; y <= y1; y++) {
+            if (y < +e.date.slice(0, 4)) continue;
+            mk(`${y}-${p2(e.month)}-${p2(e.day)}`, null, `_${y}`);
+          }
+        } else if (e.date <= range.end && (e.endDate || e.date) >= range.start) {
+          mk(e.date, e.endDate);
+        }
+      }
+    }
+    return out;
+  }, [icsCals, icsCache, range]);
+
+  /* events on a hidden personal calendar stay out of view (still block scheduling) */
+  const disabledCals = useMemo(() => new Set(userCals.filter((c) => !c.enabled).map((c) => c.id)), [userCals]);
+  const visibleEvents = useMemo(
+    () => (disabledCals.size ? events.filter((e) => !e.calId || !disabledCals.has(e.calId)) : events),
+    [events, disabledCals]
+  );
+
   const occurrences = useMemo(() => {
-    const evOcc = expandOccurrences(events, range.start, range.end, deviceTz);
+    const evOcc = expandOccurrences(visibleEvents, range.start, range.end, deviceTz);
     const holOcc = holidayEvents.map((ev) => ({ ev, occDate: ev.date, allDay: true, dispDate: ev.date, renderKey: ev.id }));
-    return [...evOcc, ...holOcc];
-  }, [events, range, holidayEvents]);
+    const icsOcc = expandOccurrences(icsEvents, range.start, range.end, deviceTz);
+    return [...evOcc, ...holOcc, ...icsOcc];
+  }, [visibleEvents, range, holidayEvents, icsEvents]);
   const schedule = useMemo(() => scheduleTasks(tasks, events, categories, now, deviceTz, waiting), [tasks, events, categories, now, waiting]);
 
   const timedByDay = useMemo(() => {
@@ -1585,6 +1710,20 @@ export default function Planner() {
     setTasks((ts) => [...ts, { id: uid(), title: quickTitle.trim(), duration: 60, deadline: null, priority: 2, category: categories[0]?.id, done: false, createdAt: Date.now(), scheduledAt: null, autoReschedule: true, completedSlot: null }]);
     setQuickTitle("");
   };
+  const CAL_COLORS = ["purple", "orange", "green", "blue", "red", "gray"];
+  const addIcsCal = (name, url) => setIcsCals((cs) => [...cs, { id: uid(), name, url, color: CAL_COLORS[cs.length % CAL_COLORS.length], enabled: true }]);
+  const toggleIcsCal = (id) => setIcsCals((cs) => cs.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)));
+  const removeIcsCal = (id) => {
+    setIcsCals((cs) => cs.filter((c) => c.id !== id));
+    setIcsCache((m) => { const n = { ...m }; delete n[id]; return n; });
+  };
+  const addUserCal = (name) => setUserCals((cs) => [...cs, { id: uid(), name, color: CAL_COLORS[(cs.length + 3) % CAL_COLORS.length], enabled: true }]);
+  const toggleUserCal = (id) => setUserCals((cs) => cs.map((c) => (c.id === id ? { ...c, enabled: !c.enabled } : c)));
+  const removeUserCal = (id) => {
+    setUserCals((cs) => cs.filter((c) => c.id !== id));
+    setEvents((es) => es.map((e) => (e.calId === id ? { ...e, calId: null } : e)));
+  };
+
   const addWait = () => {
     if (!newWait.trim()) return;
     setWaiting((ws) => [...ws, { id: uid(), title: newWait.trim(), done: false, createdAt: Date.now() }]);
@@ -1610,11 +1749,13 @@ export default function Planner() {
   const openEvent = useCallback((occ) => {
     if (dragRef.current?.moved) return;
     if (isMobile) {
-      /* full-screen info panel; holidays included (read-only there) */
-      setDetail({ type: "event", id: occ.ev.id, occDate: occ.occDate, start: occ.dispStart ?? occ.ev.start, end: occ.dispEnd ?? occ.ev.end, allDay: !!occ.allDay });
+      /* full-screen info panel; holiday/subscribed items are read-only and
+         aren't in the events array, so carry a snapshot */
+      const ro = occ.ev.holiday || occ.ev.icsCal;
+      setDetail({ type: "event", id: occ.ev.id, snap: ro ? occ.ev : null, occDate: occ.occDate, start: occ.dispStart ?? occ.ev.start, end: occ.dispEnd ?? occ.ev.end, allDay: !!occ.allDay });
       return;
     }
-    if (occ.ev.holiday) return; /* holidays are read-only */
+    if (occ.ev.holiday || occ.ev.icsCal) return; /* read-only */
     setItemDraft({ ...occ.ev, itemType: occ.ev.timeOff ? "timeoff" : "event", occDate: occ.occDate });
   }, [isMobile]);
   const openTask = useCallback((t) => {
@@ -2157,7 +2298,7 @@ export default function Planner() {
 
           <div className="px-3 py-3 border-t flex flex-col gap-1.5" style={{ borderColor: T.border }}>
             <SettingsRow icon={<Icon name="sliders" size={15} />} label="Hours & categories" onClick={() => setShowCats(true)} />
-            <SettingsRow icon={<Icon name="flag" size={15} />} label="Holiday calendars" right={holidayCals.length ? String(holidayCals.length) : "›"} onClick={() => setShowHolidays(true)} />
+            <SettingsRow icon={<Icon name="flag" size={15} />} label="Calendars" right="›" onClick={() => setShowHolidays(true)} />
             {isMobile && <SettingsRow icon={<Icon name={mode === "dark" ? "sun" : "moon"} size={15} />} label={mode === "dark" ? "Light mode" : "Dark mode"} onClick={() => setMode(mode === "dark" ? "light" : "dark")} />}
             {user ? (
               <SettingsRow icon={<Icon name="user" size={15} />} label={user.email} right="Sign out" danger onClick={doLogout} />
@@ -2221,7 +2362,7 @@ export default function Planner() {
         </div>
 
         {itemDraft && (
-          <ItemModal draft={itemDraft} events={events} tasks={tasks} waiting={waiting} categories={categories}
+          <ItemModal draft={itemDraft} events={events} tasks={tasks} waiting={waiting} userCals={userCals} categories={categories}
             onSaveEvent={saveEvent} onSaveTask={saveTask}
             onDeleteSeries={deleteSeries} onDeleteOccurrence={deleteOccurrence} onDeleteTask={deleteTask}
             onClose={() => setItemDraft(null)} />
@@ -2242,7 +2383,8 @@ export default function Planner() {
             onToggleTask={toggleTask} onToggleEvCheck={toggleEvCheck} onToggleTaskCheck={toggleTaskCheck} openMaps={openMaps} />
         )}
         {showStats && <StatsModal tasks={tasks} events={events} categories={categories} onClose={() => setShowStats(false)} />}
-        {showHolidays && <HolidaysModal selected={holidayCals} country={country} onSave={(sel, c) => { setHolidayCals(sel); setCountry(c); setShowHolidays(false); }} onClose={() => setShowHolidays(false)} />}
+        {showHolidays && <HolidaysModal icsCals={icsCals} onAddIcs={addIcsCal} onToggleIcs={toggleIcsCal} onRemoveIcs={removeIcsCal} icsCache={icsCache}
+          userCals={userCals} onAddUserCal={addUserCal} onToggleUserCal={toggleUserCal} onRemoveUserCal={removeUserCal} selected={holidayCals} country={country} onSave={(sel, c) => { setHolidayCals(sel); setCountry(c); setShowHolidays(false); }} onClose={() => setShowHolidays(false)} />}
       </div>
     </ThemeCtx.Provider>
   );
