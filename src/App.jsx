@@ -219,6 +219,7 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
   const [notes, setNotes] = useState(draft.notes || "");
   const [checklist, setChecklist] = useState(() => (draft.checklist || []).map((c) => ({ ...c })));
   const [newCheck, setNewCheck] = useState("");
+  const [confirmAsk, setConfirmAsk] = useState(null); /* in-app dialog: native confirm dialogs are unreliable in installed PWAs */
   const addCheck = () => {
     if (!newCheck.trim()) return;
     setChecklist((cs) => [...cs, { id: uid(), text: newCheck.trim(), done: false }]);
@@ -364,13 +365,13 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
       footer={
         <>
           {!isNew && (itemType === "event" || itemType === "timeoff") && repeat !== "none" && draft.occDate && (
-            <button onClick={() => { if (!window.confirm("Delete this occurrence only?")) return; onDeleteOccurrence(draft.id, draft.occDate); }} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>Delete this day</button>
+            <button onClick={() => setConfirmAsk({ title: "Delete this occurrence only?", run: () => onDeleteOccurrence(draft.id, draft.occDate) })} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>Delete this day</button>
           )}
           {!isNew && (itemType === "event" || itemType === "timeoff") && (
-            <button onClick={() => { if (!window.confirm(repeat !== "none" ? "Delete the whole series?" : "Delete this event?")) return; onDeleteSeries(draft.id); }} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>{repeat !== "none" ? "Delete series" : "Delete"}</button>
+            <button onClick={() => setConfirmAsk({ title: repeat !== "none" ? "Delete the whole series?" : "Delete this event?", run: () => onDeleteSeries(draft.id) })} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>{repeat !== "none" ? "Delete series" : "Delete"}</button>
           )}
           {!isNew && itemType === "task" && (
-            <button onClick={() => { if (!window.confirm("Delete this task?")) return; onDeleteTask(draft.id); }} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>Delete</button>
+            <button onClick={() => setConfirmAsk({ title: "Delete this task?", run: () => onDeleteTask(draft.id) })} className="px-2 py-1.5 text-xs font-medium" style={{ color: T.danger }}>Delete</button>
           )}
           <div className="flex-1" />
           <button onClick={commit} className="px-4 py-1.5 rounded-lg text-sm font-semibold text-white" style={{ background: T.accent }}>{isNew ? "Add" : "Save"}</button>
@@ -576,6 +577,18 @@ function ItemModal({ draft, events, tasks = [], waiting = [], categories, onSave
           </div>
         </div>
       </div>
+      {confirmAsk && (
+        <div className="fixed inset-0 flex items-center justify-center p-8" style={{ background: "rgba(0,0,0,0.5)", zIndex: 70 }} onClick={() => setConfirmAsk(null)}>
+          <div className="rounded-2xl w-full max-w-xs px-4 py-4" style={{ background: T.surface, boxShadow: T.shadow }} onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold mb-1" style={{ color: T.text }}>{confirmAsk.title}</div>
+            <div className="text-xs mb-3.5" style={{ color: T.dim }}>This can't be undone.</div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setConfirmAsk(null)} className="rounded-lg px-3 py-1.5 text-xs font-medium" style={{ background: T.surface2, color: T.text }}>Cancel</button>
+              <button onClick={() => { const r = confirmAsk.run; setConfirmAsk(null); r(); }} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white" style={{ background: T.danger }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
@@ -1277,6 +1290,7 @@ export default function Planner() {
   const [newWait, setNewWait] = useState("");
   const [saveState, setSaveState] = useState("idle");
   const [syncErr, setSyncErr] = useState("");
+  const [showSyncErr, setShowSyncErr] = useState(false);
   const [idWidgetOpen, setIdWidgetOpen] = useState(false);
   /* Hard rule after the data-loss incident: a device that has NOT completed
      a successful load from the server this session may never push to it.
@@ -1287,6 +1301,7 @@ export default function Planner() {
   const markServerOk = (v) => { serverOkRef.current = v; setServerOk(v); };
   const lastPushRef = useRef(0);
   const dataRef = useRef(null);
+  const editSeqRef = useRef(0); /* bumped on every local edit; stale pulls compare against it */
   const [dragPreview, setDragPreview] = useState(null);
   const [createPreview, setCreatePreview] = useState(null);
   const [hourH, setHourH] = useState(HOUR_H_BASE);
@@ -1371,6 +1386,7 @@ export default function Planner() {
   useEffect(() => {
     if (!loaded) return;
     if (skipNextSave.current) { skipNextSave.current = false; return; }
+    editSeqRef.current++;
     setSaveState("saving");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
@@ -1391,14 +1407,17 @@ export default function Planner() {
     let busy = false;
     const pull = async () => {
       if (busy || document.hidden) return;
-      /* never fight an in-flight local edit: recent pushes and pending
-         debounces mean this device is the source of truth right now */
-      if (saveTimer.current && Date.now() - lastPushRef.current < 5000) return;
+      /* never fight an in-flight local edit: a recent push means this
+         device is the source of truth right now */
       if (Date.now() - lastPushRef.current < 5000) return;
       busy = true;
+      const seqAtStart = editSeqRef.current;
       try {
         const d = await loadData(user);
         markServerOk(true);
+        /* a local edit (e.g. a delete) landed while this response was in
+           flight — applying the stale server copy would silently undo it */
+        if (editSeqRef.current !== seqAtStart) { busy = false; return; }
         if (d) {
           const m = migrate(d);
           if (JSON.stringify(m) !== JSON.stringify(migrate(dataRef.current))) {
@@ -2053,9 +2072,12 @@ export default function Planner() {
               <span aria-hidden="true" style={{ color: T.accent }}>↻</span>Rollover
             </h2>
             <button className="text-[10px] text-left" style={{ color: saveState === "error" ? T.danger : T.faint, cursor: saveState === "error" ? "pointer" : "default" }}
-              title={saveState === "error" ? syncErr : ""} onClick={() => { if (saveState === "error" && syncErr) alert(syncErr); }}>
+              title={saveState === "error" ? syncErr : ""} onClick={() => { if (saveState === "error" && syncErr) setShowSyncErr((v) => !v); }}>
               {saveState === "saving" ? (user ? "syncing…" : "saving…") : saveState === "saved" ? (user ? (serverOk ? "synced" : "saved here — sync paused") : "saved") : saveState === "error" ? "sync failed — tap for details" : ""}
             </button>
+            {showSyncErr && saveState === "error" && (
+              <div className="text-[10px] mt-0.5 max-w-[190px]" style={{ color: T.danger }}>{syncErr}</div>
+            )}
           </div>
 
           <div className="px-4 pb-3 flex gap-1.5">
