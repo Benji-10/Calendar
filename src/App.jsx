@@ -7,7 +7,7 @@ import {
   wallToUtc, utcToWall, timeZoneList, tzLabel,
 } from "./time.js";
 import { expandOccurrences, scheduleTasks, windowFor, layoutDay, effectivePriority } from "./scheduler.js";
-import { initIdentity, openLogin, doLogout, loadData, saveData, STORE_KEY } from "./storage.js";
+import { initIdentity, openLogin, doLogout, loadData, saveData, STORE_KEY, BACKUP_KEY } from "./storage.js";
 import { HOLIDAY_CALENDARS, calByCode, guessCountry, fetchHolidays, yearsForRange } from "./holidays.js";
 
 const HOUR_H_BASE = 48;
@@ -1167,6 +1167,15 @@ export default function Planner() {
   const [saveState, setSaveState] = useState("idle");
   const [syncErr, setSyncErr] = useState("");
   const [idWidgetOpen, setIdWidgetOpen] = useState(false);
+  /* Hard rule after the data-loss incident: a device that has NOT completed
+     a successful load from the server this session may never push to it.
+     Otherwise a device that failed to load (empty state) auto-saves that
+     empty state over everyone else's data. */
+  const [serverOk, setServerOk] = useState(false);
+  const serverOkRef = useRef(false);
+  const markServerOk = (v) => { serverOkRef.current = v; setServerOk(v); };
+  const lastPushRef = useRef(0);
+  const dataRef = useRef(null);
   const [dragPreview, setDragPreview] = useState(null);
   const [createPreview, setCreatePreview] = useState(null);
   const [hourH, setHourH] = useState(HOUR_H_BASE);
@@ -1215,6 +1224,7 @@ export default function Planner() {
       try {
         const d = await loadData(user);
         if (!alive) return;
+        if (user) markServerOk(true);
         if (d) {
           const m = migrate(d);
           setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
@@ -1229,6 +1239,7 @@ export default function Planner() {
           }
         }
       } catch (err) {
+        if (user) markServerOk(false);
         setSaveState("error"); setSyncErr(explainSyncError(err));
         /* remote failed — the local mirror still has this device's data */
         try {
@@ -1253,13 +1264,53 @@ export default function Planner() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        await saveData(user, { tasks, events, categories, waiting, holidayCals, holidayCache, country });
+        await saveData(user && serverOkRef.current ? user : null, { tasks, events, categories, waiting, holidayCals, holidayCache, country });
+        lastPushRef.current = Date.now();
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 1500);
       } catch (err) { setSaveState("error"); setSyncErr(explainSyncError(err)); }
     }, 500);
     return () => clearTimeout(saveTimer.current);
   }, [tasks, events, categories, waiting, holidayCals, holidayCache, country, loaded, user]);
+
+  /* ---------- periodic pull so all devices stay current ---------- */
+  dataRef.current = { tasks, events, categories, waiting, holidayCals, holidayCache, country };
+  useEffect(() => {
+    if (!user || !loaded) return;
+    let busy = false;
+    const pull = async () => {
+      if (busy || document.hidden) return;
+      /* never fight an in-flight local edit: recent pushes and pending
+         debounces mean this device is the source of truth right now */
+      if (saveTimer.current && Date.now() - lastPushRef.current < 5000) return;
+      if (Date.now() - lastPushRef.current < 5000) return;
+      busy = true;
+      try {
+        const d = await loadData(user);
+        markServerOk(true);
+        if (d) {
+          const m = migrate(d);
+          if (JSON.stringify(m) !== JSON.stringify(migrate(dataRef.current))) {
+            skipNextSave.current = true;
+            setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country);
+          }
+        }
+      } catch { /* transient — next tick retries */ }
+      busy = false;
+    };
+    const iv = setInterval(pull, 60000);
+    const onWake = () => { if (!document.hidden) pull(); };
+    document.addEventListener("visibilitychange", onWake);
+    window.addEventListener("focus", onWake);
+    window.addEventListener("online", onWake);
+    return () => {
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onWake);
+      window.removeEventListener("focus", onWake);
+      window.removeEventListener("online", onWake);
+    };
+  }, [user, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* land on the current time; only view changes re-scroll */
   useEffect(() => {
@@ -1404,6 +1455,29 @@ export default function Planner() {
     setTasks((ts) => [...ts, { id: uid(), title: quickTitle.trim(), duration: 60, deadline: null, priority: 2, category: categories[0]?.id, done: false, createdAt: Date.now(), scheduledAt: null, autoReschedule: true, completedSlot: null }]);
     setQuickTitle("");
   };
+  const recoverBackup = () => {
+    let raw = null;
+    try { raw = localStorage.getItem(BACKUP_KEY); } catch { /* private mode */ }
+    if (!raw) { alert("No backup found on this device."); return; }
+    try {
+      const m = migrate(JSON.parse(raw));
+      const mergeById = (cur, extra) => {
+        const seen = new Set(cur.map((x) => x.id));
+        return [...cur, ...extra.filter((x) => x.id && !seen.has(x.id))];
+      };
+      const addT = m.tasks.filter((x) => !tasks.some((c) => c.id === x.id)).length;
+      const addE = m.events.filter((x) => !events.some((c) => c.id === x.id)).length;
+      const addW = m.waiting.filter((x) => !waiting.some((c) => c.id === x.id)).length;
+      setTasks((c) => mergeById(c, m.tasks));
+      setEvents((c) => mergeById(c, m.events));
+      setWaiting((c) => mergeById(c, m.waiting));
+      setCategories((c) => mergeById(c, m.categories));
+      alert(addT + addE + addW === 0
+        ? "Backup checked — everything in it is already here."
+        : `Recovered ${addT} task(s), ${addE} event(s), ${addW} waiting item(s). They'll sync on the next change.`);
+    } catch { alert("The backup on this device couldn't be read."); }
+  };
+
   const addWait = () => {
     if (!newWait.trim()) return;
     setWaiting((ws) => [...ws, { id: uid(), title: newWait.trim(), done: false, createdAt: Date.now() }]);
@@ -1872,7 +1946,7 @@ export default function Planner() {
             </h2>
             <button className="text-[10px] text-left" style={{ color: saveState === "error" ? T.danger : T.faint, cursor: saveState === "error" ? "pointer" : "default" }}
               title={saveState === "error" ? syncErr : ""} onClick={() => { if (saveState === "error" && syncErr) alert(syncErr); }}>
-              {saveState === "saving" ? (user ? "syncing…" : "saving…") : saveState === "saved" ? (user ? "synced" : "saved") : saveState === "error" ? "sync failed — tap for details" : ""}
+              {saveState === "saving" ? (user ? "syncing…" : "saving…") : saveState === "saved" ? (user ? (serverOk ? "synced" : "saved here — sync paused") : "saved") : saveState === "error" ? "sync failed — tap for details" : ""}
             </button>
           </div>
 
@@ -1955,6 +2029,9 @@ export default function Planner() {
             <SettingsRow icon={<Icon name="sliders" size={15} />} label="Hours & categories" onClick={() => setShowCats(true)} />
             <SettingsRow icon={<Icon name="flag" size={15} />} label="Holiday calendars" right={holidayCals.length ? String(holidayCals.length) : "›"} onClick={() => setShowHolidays(true)} />
             {isMobile && <SettingsRow icon={<Icon name={mode === "dark" ? "sun" : "moon"} size={15} />} label={mode === "dark" ? "Light mode" : "Dark mode"} onClick={() => setMode(mode === "dark" ? "light" : "dark")} />}
+            {(() => { try { return !!localStorage.getItem(BACKUP_KEY); } catch { return false; } })() && (
+              <SettingsRow icon={<Icon name="clock" size={15} />} label="Recover older data on this device" right="restore" onClick={recoverBackup} />
+            )}
             {user ? (
               <SettingsRow icon={<Icon name="user" size={15} />} label={user.email} right="Sign out" danger onClick={doLogout} />
             ) : (

@@ -5,6 +5,7 @@
 import netlifyIdentity from "netlify-identity-widget";
 
 export const STORE_KEY = "planner-data-v1";
+export const BACKUP_KEY = "planner-data-backup-v1";
 
 export function initIdentity(onChange, onWidgetToggle) {
   if (onWidgetToggle) {
@@ -63,8 +64,15 @@ export async function loadData(user) {
     if (!r.ok) throw new Error(`load failed (${r.status})`);
     const j = await r.json();
     if (j.data) {
-      /* mirror locally so the next load works even if the network doesn't */
-      try { localStorage.setItem(STORE_KEY, JSON.stringify(j.data)); } catch { /* quota */ }
+      try {
+        const next = JSON.stringify(j.data);
+        const cur = localStorage.getItem(STORE_KEY);
+        /* about to overwrite different local data with the remote copy —
+           keep the old local data as a backup so nothing is ever one
+           overwrite away from gone */
+        if (cur && cur !== next) localStorage.setItem(BACKUP_KEY, cur);
+        localStorage.setItem(STORE_KEY, next);
+      } catch { /* quota */ }
     }
     return j.data || null;
   }

@@ -156,3 +156,14 @@ zoom out to the month, tap "2026" to reach the year; tap a month in year view
 or a day in month view to drill back down. Pinch is now zoom-only and runs as
 a pure compositor transform during the gesture (layout commits once on
 release), so it tracks fingers at full frame rate.
+
+## Sync safety & multi-device
+- A device may only push to the server after a successful pull that session —
+  a device that failed to load can never overwrite the server with its empty
+  state (this class of data loss is what the rule exists for).
+- Before remote data overwrites different local data, the local copy is
+  snapshotted to a backup key. Sidebar -> "Recover older data on this device"
+  merges that backup (by id) back in and re-syncs it.
+- Signed-in devices re-pull every 60s and whenever the tab/app regains focus
+  or comes back online, skipping pulls within 5s of a local push so devices
+  never fight their own edits.
