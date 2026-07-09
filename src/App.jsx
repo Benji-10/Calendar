@@ -1734,7 +1734,6 @@ export default function Planner() {
           el.style.transform = `scaleY(${r})`;
         }
       } else if (g.pts.size === 1 && !g.pinching) {
-        if (viewRef.current !== "month") return; /* time grid: one finger scrolls; the week strip changes days */
         if (dragRef.current && dragRef.current.active) return; /* a block drag / floating create owns this finger */
         const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
         if (!g.swipeAxis && (Math.abs(dx) > 24 || Math.abs(dy) > 24)) g.swipeAxis = Math.abs(dx) > Math.abs(dy) * 1.4 ? "h" : "v";
@@ -1803,11 +1802,14 @@ export default function Planner() {
     return () => el.removeEventListener("wheel", onGridWheel);
   }, [onGridWheel, loaded, view]);
 
-  /* slide animation when the visible days move */
+  /* slide animation when the anchor moves — applied via classList before
+     paint, never via className, so the transition flag flipping off can't
+     re-trigger it (that replay was the brief rightward "lag") */
+  const viewWrapRef = useRef(null);
   const firstAnchor = useRef(true);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (firstAnchor.current) { firstAnchor.current = false; return; }
-    const el = view === "month" ? null : gridBodyRef.current;
+    const el = view === "week" ? gridBodyRef.current : viewWrapRef.current;
     if (!el) return;
     const cls = lastDirRef.current > 0 ? "rl-slide-l" : "rl-slide-r";
     el.classList.remove("rl-slide-l", "rl-slide-r");
@@ -1820,6 +1822,9 @@ export default function Planner() {
 
   /* the header label doubles as the "zoom out" control:
      week -> month -> year, each showing where a tap takes you */
+  /* put a chosen day in the middle of the rolling window, not at the left */
+  const centerOn = (d) => addDays(d, -Math.floor(visibleN / 2));
+
   const backLabel = view === "week"
     ? `${MONTHS[anchor.getMonth()].slice(0, 3)} ${anchor.getFullYear()}`
     : `${anchor.getFullYear()}`;
@@ -1844,7 +1849,7 @@ export default function Planner() {
         {isMobile && drawerOpen && <div className={`fixed inset-0 z-30 ${drawerClosing ? "rl-fadebg-out" : "rl-fadebg"}`} style={{ background: "rgba(0,0,0,0.45)" }} onClick={closeDrawer} />}
         {(!isMobile || drawerOpen) && (
         <div className={isMobile ? `fixed inset-y-0 left-0 z-40 w-72 flex flex-col border-r ${drawerClosing ? "rl-drawer-out" : "rl-drawer-in"}` : "w-72 flex-shrink-0 flex flex-col border-r"}
-          style={{ borderColor: T.border, background: T.surface, boxShadow: isMobile ? T.shadow : "none" }}>
+          style={{ borderColor: T.border, background: T.surface, boxShadow: isMobile ? T.shadow : "none", paddingTop: isMobile ? "env(safe-area-inset-top)" : 0 }}>
           <div className="px-4 pt-4 pb-2 flex items-center justify-between">
             <h2 className="font-bold text-lg flex items-center gap-1.5" style={{ color: T.text }}>
               <span aria-hidden="true" style={{ color: T.accent }}>↻</span>Rollover
@@ -1965,7 +1970,7 @@ export default function Planner() {
             <button onClick={() => setShowStats(true)} className="px-2 py-1 rounded-md" style={{ color: T.dim }} title="Progress" aria-label="Progress stats"><Icon name="chart" size={15} /></button>
             {!isMobile && <button onClick={() => setMode(mode === "dark" ? "light" : "dark")} className="px-2 py-1 text-sm rounded-md" style={{ color: T.dim }} title="Toggle dark mode" aria-label="Toggle dark mode">{mode === "dark" ? <Icon name="sun" size={15} /> : <Icon name="moon" size={15} />}</button>}
             {!isMobile && <button onClick={() => { lastDirRef.current = -1; shift(-1); }} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Previous">‹</button>}
-            <button onClick={() => { lastDirRef.current = 1; setAnchor(new Date()); }} className="px-2.5 py-1 text-xs font-medium" style={{ color: T.accent }}>Today</button>
+            <button onClick={() => { lastDirRef.current = 1; setAnchor(view === "week" ? centerOn(new Date()) : new Date()); }} className="px-2.5 py-1 text-xs font-medium" style={{ color: T.accent }}>Today</button>
             {!isMobile && <button onClick={() => { lastDirRef.current = 1; shift(1); }} className="px-2 py-1 text-sm" style={{ color: T.accent }} aria-label="Next">›</button>}
             <button onClick={() => setItemDraft({ itemType: "event", date: dateKey(anchor), start: Math.min(Math.ceil(nowMin / 30) * 30, 23 * 60), end: Math.min(Math.ceil(nowMin / 30) * 30 + 60, 1440), color: "blue", tz: deviceTz })}
               className={`ml-1 rounded-lg text-white font-semibold text-xs ${isMobile ? "px-2.5 py-1.5" : "px-3 py-1.5"}`} style={{ background: T.accent }}>{isMobile ? "＋" : "＋ New"}</button>
@@ -1973,19 +1978,19 @@ export default function Planner() {
 
           {isMobile && view === "week" && (
             <WeekStrip anchor={anchor} now={now} visibleN={visibleN}
-              onPickDay={(d) => { lastDirRef.current = d >= anchor ? 1 : -1; setAnchor(d); }}
+              onPickDay={(d) => { lastDirRef.current = d >= anchor ? 1 : -1; setAnchor(centerOn(d)); }}
               onSwipeWeek={(dir) => { lastDirRef.current = dir; setAnchor((a) => addDays(a, dir * 7)); }} />
           )}
           {view === "year" ? (
-            <div key={anchor.getFullYear()} className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : lastDirRef.current > 0 ? "rl-slide-l" : "rl-slide-r"}`}>
+            <div key={anchor.getFullYear()} ref={viewWrapRef} className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : ""}`}>
               <YearGrid anchor={anchor} now={now}
                 onPickMonth={(m) => { setAnchor(new Date(anchor.getFullYear(), m, 1)); changeView("month"); }} />
             </div>
           ) : view === "month" ? (
-            <div key={`${anchor.getFullYear()}-${anchor.getMonth()}`} className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : lastDirRef.current > 0 ? "rl-slide-l" : "rl-slide-r"}`}
+            <div key={`${anchor.getFullYear()}-${anchor.getMonth()}`} ref={viewWrapRef} className={`flex-1 flex flex-col min-h-0 ${transition ? "rl-fade" : ""}`}
               onPointerDown={onGridPointerDown} style={{ touchAction: "pan-y" }}>
               <MonthGrid anchor={anchor} now={now} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
-                onOpenDay={(d) => { setAnchor(d); changeView("week"); }} />
+                onOpenDay={(d) => { setAnchor(centerOn(d)); changeView("week"); }} />
             </div>
           ) : (
             <TimeGrid days={days} now={now} nowMin={nowMin} hourH={hourH} isMobile={isMobile} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
