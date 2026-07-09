@@ -102,7 +102,9 @@ function migrate(d) {
   out.icsCals = d.icsCals || [];
   out.userCals = d.userCals || [];
   out.holidayCals = d.holidayCals || [];
-  out.holidayCache = d.holidayCache || {};
+  /* pre-ICS Nager cache is dead data (and held observed dates like
+     Independence Day on Jul 3) — hard-empty it so it drains from the DB */
+  out.holidayCache = {};
   out.country = d.country || guessCountry();
   return out;
 }
@@ -1149,6 +1151,7 @@ function HolidaysModal({ selected, country, icsCals, onAddIcs, onToggleIcs, onRe
               style={{ background: on ? colorSet(c.color, T.mode).bg : T.surface2, color: on ? colorSet(c.color, T.mode).text : T.dim, border: `1px solid ${on ? colorSet(c.color, T.mode).border : "transparent"}` }}>
               <span className="rounded-full flex-shrink-0" style={{ width: 8, height: 8, background: ACCENTS[c.color] }} />
               <span className="flex-1 truncate">{c.name}</span>
+              {on && icsCache[`hol_${c.code}`]?.error && <span className="text-[10px]" style={{ color: T.danger }}>couldn't load</span>}
               {on && <span style={{ color: colorSet(c.color, T.mode).border }}>✓</span>}
             </button>
           );
@@ -1561,14 +1564,19 @@ export default function Planner() {
   const allFeeds = useMemo(() => [...holidayFeeds, ...icsCals], [holidayFeeds, icsCals]);
 
   /* subscribed ICS feeds: refresh stale ones (12h), persist the cache locally */
+  const icsCacheRef = useRef(icsCache);
+  icsCacheRef.current = icsCache;
   useEffect(() => {
     if (!loaded) return;
     let dead = false;
-    (async () => {
+    const sync = async () => {
       for (const cal of allFeeds) {
-        if (!cal.enabled) continue;
-        const c = icsCache[cal.id];
-        if (c && Date.now() - (c.fetched || 0) < 12 * 3600e3) continue;
+        if (!cal.enabled || dead) continue;
+        const c = icsCacheRef.current[cal.id];
+        /* successful fetches are fresh for 12h; FAILED ones only for 10min —
+           honoring errors for 12h left devices stuck on poisoned caches */
+        const maxAge = c && c.error ? 10 * 60e3 : 12 * 3600e3;
+        if (c && Date.now() - (c.fetched || 0) < maxAge) continue;
         try {
           const r = await fetch(`/.netlify/functions/ics?url=${encodeURIComponent(cal.url)}`);
           if (!r.ok) throw new Error(String(r.status));
@@ -1579,8 +1587,10 @@ export default function Planner() {
           if (!dead) setIcsCache((m) => ({ ...m, [cal.id]: { fetched: Date.now(), events: m[cal.id]?.events || [], error: true } }));
         }
       }
-    })();
-    return () => { dead = true; };
+    };
+    sync();
+    const iv = setInterval(sync, 10 * 60e3);
+    return () => { dead = true; clearInterval(iv); };
   }, [allFeeds, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     try { localStorage.setItem("rollover-ics-cache-v1", JSON.stringify(icsCache)); } catch { /* quota */ }
@@ -2362,7 +2372,10 @@ export default function Planner() {
         )}
         {showStats && <StatsModal tasks={tasks} events={events} categories={categories} onClose={() => setShowStats(false)} />}
         {showHolidays && <HolidaysModal icsCals={icsCals} onAddIcs={addIcsCal} onToggleIcs={toggleIcsCal} onRemoveIcs={removeIcsCal} icsCache={icsCache}
-          userCals={userCals} onAddUserCal={addUserCal} onToggleUserCal={toggleUserCal} onRemoveUserCal={removeUserCal} selected={holidayCals} country={country} onSave={(sel, c) => { setHolidayCals(sel); setCountry(c); setShowHolidays(false); }} onClose={() => setShowHolidays(false)} />}
+          userCals={userCals} onAddUserCal={addUserCal} onToggleUserCal={toggleUserCal} onRemoveUserCal={removeUserCal} selected={holidayCals} country={country} onSave={(sel, c) => {
+            setHolidayCals(sel); setCountry(c); setShowHolidays(false);
+            setIcsCache((m) => { const n = { ...m }; for (const k of Object.keys(n)) if (n[k]?.error) delete n[k]; return n; });
+          }} onClose={() => setShowHolidays(false)} />}
       </div>
     </ThemeCtx.Provider>
   );
