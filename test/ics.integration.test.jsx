@@ -12,6 +12,18 @@ DTEND;VALUE=DATE:20260713
 SUMMARY:Battle of the Boyne
 UID:boyne@test
 END:VEVENT
+BEGIN:VEVENT
+DTSTART;VALUE=DATE:20260713
+DTEND;VALUE=DATE:20260714
+SUMMARY:Battle of the Boyne (substitute day)
+UID:boyne-sub@test
+END:VEVENT
+BEGIN:VEVENT
+DTSTART;VALUE=DATE:20261228
+DTEND;VALUE=DATE:20261229
+SUMMARY:Boxing Day (substitute day)
+UID:boxing-sub@test
+END:VEVENT
 END:VCALENDAR`;
 
 describe("ics feed pipeline", () => {
@@ -39,6 +51,8 @@ describe("ics feed pipeline", () => {
     const today = new Date();
     if (today >= new Date(2026, 6, 6) && today <= new Date(2026, 6, 12)) {
       await waitFor(() => expect(document.body.textContent).toContain("Battle of the Boyne"), { timeout: 3000 });
+      /* the traditional entry exists, so the substitute duplicate is hidden */
+      expect(document.body.textContent).not.toContain("substitute");
     }
   }, 15000);
 });

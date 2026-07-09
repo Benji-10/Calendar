@@ -1606,7 +1606,23 @@ export default function Planner() {
       if (!cal.enabled) continue;
       const c = icsCache[cal.id];
       if (!c || !c.events) continue;
-      for (const e of c.events) {
+      let entries = c.events;
+      if (cal.holiday) {
+        /* built-in holiday feeds: hide "(substitute day)"/"(observed)"
+           duplicates — but only when the traditional-date entry actually
+           exists nearby; if the feed ships ONLY the substitute, keep it
+           rather than losing the holiday entirely */
+        const subRe = /^(.*) \((?:substitute day|observed)\)$/i;
+        entries = c.events.filter((e) => {
+          const m = e.title.match(subRe);
+          if (!m) return true;
+          const base = m[1].trim().toLowerCase();
+          return !c.events.some((o) =>
+            o !== e && o.title.trim().toLowerCase() === base &&
+            o.date <= e.date && o.date >= addDaysKey(e.date, -6));
+        });
+      }
+      for (const e of entries) {
         const mk = (date, endDate, suffix = "") => out.push({
           id: `ics_${cal.id}_${e.uid}${suffix}`, title: e.title, date, endDate,
           allDay: e.allDay, start: e.start, end: e.end, tz: deviceTz, repeat: "none",
