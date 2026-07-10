@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseEmail } from "../netlify/functions/parse-email.js";
+import { parseEmail } from "../netlify/functions/lib/parse-email.js";
 
 const FLIGHT_HTML = `<html><body><p>Your booking</p>
 <script type="application/ld+json">

@@ -10,7 +10,7 @@
    Env: DATABASE_URL, INBOUND_ADDRESS (e.g. abc123@cloudmailin.net), INBOUND_SECRET. */
 
 const { neon } = require("@neondatabase/serverless");
-const { parseEmail } = require("./parse-email.js");
+const { parseEmail } = require("./lib/parse-email.js");
 
 let ensured = null;
 async function ensureTables(sql) {
@@ -55,6 +55,7 @@ function normalizeInbound(body) {
 }
 
 exports.handler = async (event, context) => {
+  try {
   if (!process.env.DATABASE_URL) return json(500, { error: "DATABASE_URL not configured" });
   const sql = neon(process.env.DATABASE_URL);
   await ensureTables(sql);
@@ -92,7 +93,11 @@ exports.handler = async (event, context) => {
   if (!user) return json(401, { error: "Not signed in" });
 
   if (event.httpMethod === "GET") {
-    if (!process.env.INBOUND_ADDRESS || !process.env.INBOUND_SECRET) return json(200, { unconfigured: true, suggestions: [] });
+    const missing = [
+      !process.env.INBOUND_ADDRESS && "INBOUND_ADDRESS",
+      !process.env.INBOUND_SECRET && "INBOUND_SECRET",
+    ].filter(Boolean);
+    if (missing.length) return json(200, { unconfigured: true, missing, context: process.env.CONTEXT || "unknown", suggestions: [] });
     let tok = await sql`SELECT token FROM planner_email_tokens WHERE user_id = ${user.sub}`;
     if (!tok[0]) {
       const t = newToken();
@@ -116,4 +121,7 @@ exports.handler = async (event, context) => {
   }
 
   return json(405, { error: "Method not allowed" });
+  } catch (err) {
+    return json(500, { error: `email function error: ${String(err && err.message ? err.message : err)}` });
+  }
 };

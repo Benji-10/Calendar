@@ -1355,6 +1355,7 @@ export default function Planner() {
   const [showStats, setShowStats] = useState(false);
   const [showEmail, setShowEmail] = useState(false);
   const [emailInbox, setEmailInbox] = useState(null); /* {address?|unconfigured, suggestions:[]} */
+  const [emailErr, setEmailErr] = useState("");
   const [quickTitle, setQuickTitle] = useState("");
   const [newWait, setNewWait] = useState("");
   const [saveState, setSaveState] = useState("idle");
@@ -1519,8 +1520,8 @@ export default function Planner() {
       if (document.hidden) return;
       try {
         const j = await fetchEmailInbox(user);
-        if (!dead && j) setEmailInbox(j);
-      } catch { /* transient */ }
+        if (!dead && j) { setEmailInbox(j); setEmailErr(""); }
+      } catch (err) { if (!dead) setEmailErr(String(err?.message || err)); }
     };
     pull();
     const iv = setInterval(pull, 5 * 60e3);
@@ -2464,10 +2465,18 @@ export default function Planner() {
                 </button>
                 <p className="text-[10px] mt-1.5" style={{ color: T.faint }}>Tap to copy. Only emails sent to this exact address are read.</p>
               </>
-            ) : (
+            ) : emailInbox?.unconfigured ? (
               <p className="text-xs" style={{ color: T.dim }}>
-                Not configured on the server yet: this needs an inbound-email provider pointing at the email function, plus INBOUND_ADDRESS and INBOUND_SECRET environment variables — see the README for the five-minute setup.
+                The server reports missing environment variable{emailInbox.missing?.length > 1 ? "s" : ""}:{" "}
+                <span className="font-mono" style={{ color: T.danger }}>{(emailInbox.missing || []).join(", ")}</span>
+                {" "}in the <span className="font-mono">{emailInbox.context}</span> deploy context. Check the variable exists for the context this URL is served from (production vs deploy-preview vs branch), then redeploy.
               </p>
+            ) : emailErr ? (
+              <p className="text-xs" style={{ color: T.danger }}>
+                Couldn't reach the email function: {emailErr}. A 404 means the deployed build predates this feature; anything else is in the function logs.
+              </p>
+            ) : (
+              <p className="text-xs" style={{ color: T.dim }}>Checking the server…</p>
             )}
           </Modal>
         )}
