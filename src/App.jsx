@@ -700,6 +700,20 @@ function geomStyle(g) {
   return { top: g.top, height: g.height, left: g.left, right: g.right };
 }
 
+/* suggestion payload times -> this device's wall clock when the email
+   carried a pinned instant (Z / explicit offset); wall-only payloads pass
+   through untouched */
+function sugLocal(p) {
+  if (p.allDay || p.startUtcMs == null) return { date: p.date, start: p.start, end: p.end };
+  const sw = utcToWall(p.startUtcMs, deviceTz);
+  let end;
+  if (p.endUtcMs != null) {
+    const ew = utcToWall(p.endUtcMs, deviceTz);
+    end = ew.date === sw.date ? ew.minutes : 1440;
+  } else end = Math.min(1440, sw.minutes + Math.max(15, (p.end ?? p.start + 60) - p.start));
+  return { date: sw.date, start: sw.minutes, end: Math.max(end, sw.minutes + 15) };
+}
+
 function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMaps }) {
   const T = useT();
   if (dragPreview && dragPreview.key === occ.renderKey) return null;
@@ -708,14 +722,17 @@ function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMa
   const end = Math.min(occ.dispEnd, 1440);
   const g = blockGeom(lay, hourH, start, end);
   const compact = g.height < 34;
+  const sug = !!occ.ev.suggestion;
+  /* show at least one full line; never spill more than the block can hold */
+  const clampLines = Math.max(1, Math.floor((g.height - 4) / (compact ? 13.2 : 15)));
   return (
-    <div className="absolute rounded-lg cursor-grab active:cursor-grabbing select-none group/ev"
+    <div className={`absolute rounded-lg select-none group/ev ${sug ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
       onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "move")}
       onClick={(e) => { e.stopPropagation(); openEvent(occ); }}
-      style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px solid ${c.border}`, zIndex: lay ? lay.z : 2, touchAction: "none" }}>
+      style={{ ...geomStyle(g), background: c.bg, ...(sug ? { border: `1.5px dashed ${c.border}`, opacity: 0.8 } : { borderLeft: `3px solid ${c.border}` }), zIndex: lay ? lay.z : 2, touchAction: "none" }}>
       <div className="px-1.5 py-0.5 pointer-events-none">
-        <div className="text-xs font-semibold break-words" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25" }}>
-          {occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}
+        <div className="text-xs font-semibold break-words" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: clampLines, overflow: "hidden" }}>
+          {sug ? "? " : occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}
         </div>
       </div>
       <div className="absolute left-0 right-0 top-0 h-2 opacity-0 group-hover/ev:opacity-100 cursor-row-resize flex justify-center"
@@ -740,6 +757,7 @@ function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleT
   const overdue = !done && ((t.deadline && item.date > t.deadline) || item.overdue);
   const g = blockGeom(lay, hourH, item.start, item.end);
   const compact = g.height < 34;
+  const clampLines = Math.max(1, Math.floor((g.height - 4) / (compact ? 13.2 : 15)));
   return (
     <div className={`absolute rounded-lg select-none group/tk ${done ? "" : "cursor-grab active:cursor-grabbing"}`}
       onPointerDown={(e) => { if (!done) beginDrag(e, { type: "task", item }, "move"); }}
@@ -747,7 +765,7 @@ function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleT
       style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, zIndex: lay ? lay.z : 2, opacity: done ? 0.6 : 1, touchAction: done ? "auto" : "none" }}
       title={done ? "Completed" : item.pinned ? "Pinned time — drag to move" : "Auto-scheduled — drag to pin a time"}>
       <div className="px-1.5 py-0.5 pointer-events-none">
-        <div className={`text-xs font-semibold break-words ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25" }}>
+        <div className={`text-xs font-semibold break-words ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: clampLines, overflow: "hidden" }}>
           {!done && item.chained && <Icon name="link" size={10} color={c.text} sw={2} style={{ display: "inline", marginRight: 3, verticalAlign: "-1px" }} />}
           {t.title}{overdue ? " · overdue" : ""}
         </div>
@@ -858,7 +876,7 @@ function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay,
               <div key={key} className="flex-1 px-0.5 pb-1 flex flex-col gap-0.5 border-l overflow-hidden" style={{ borderColor: T.gridLine }}>
                 {(allDayByDay[key] || []).map((o) => (
                   <button key={o.renderKey} onClick={() => openEvent(o)} className="rounded px-1.5 text-left text-[10px] font-semibold truncate text-white"
-                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue }}><span className="inline-flex items-center gap-1 max-w-full">{o.ev.timeOff ? <Icon name="umbrella" size={9} color="white" sw={2.4} /> : o.ev.holiday ? <Icon name="flag" size={9} color="white" sw={2.4} /> : null}<span className="truncate">{o.ev.title}</span></span></button>
+                    style={{ background: ACCENTS[o.ev.color] || ACCENTS.blue, ...(o.ev.suggestion ? { opacity: 0.55, outline: "1.5px dashed rgba(255,255,255,.9)", outlineOffset: -1.5 } : {}) }}><span className="inline-flex items-center gap-1 max-w-full">{o.ev.timeOff ? <Icon name="umbrella" size={9} color="white" sw={2.4} /> : o.ev.holiday ? <Icon name="flag" size={9} color="white" sw={2.4} /> : null}<span className="truncate">{o.ev.title}</span></span></button>
                 ))}
               </div>
             );
@@ -1172,6 +1190,16 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   useEffect(() => { if (!item) onBack(); }, [item, onBack]);
   if (!item) return null;
 
+  /* live times for simple events: derive from the event itself (converted
+     from its stored tz to this device) — captured detail times only cover
+     repeats/midnight splits, where per-occurrence context matters */
+  let dDate = detail.occDate, dStart = detail.start, dEnd = detail.end;
+  if (!isTask && ev && !ev.allDay && (!ev.repeat || ev.repeat === "none")) {
+    const sw = utcToWall(wallToUtc(ev.date, ev.start, ev.tz || deviceTz), deviceTz);
+    const ew = utcToWall(wallToUtc(ev.date, ev.end, ev.tz || deviceTz), deviceTz);
+    dDate = sw.date; dStart = sw.minutes; dEnd = ew.minutes + (ew.date > sw.date ? 1440 : 0);
+  }
+
   const c = isTask ? prioSet(t.priority, T.mode) : colorSet(ev.color, T.mode);
   const slot = isTask ? schedule[t.id] : null;
   const prereq = isTask && t.dependsOn ? tasks.find((x) => x.id === t.dependsOn) : null;
@@ -1212,7 +1240,7 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
             <InfoRow icon="clock">
               {ev.allDay
                 ? `All day · ${dateStr(detail.occDate)}${ev.endDate && ev.endDate !== ev.date ? ` – ${dateStr(ev.endDate)}` : ""}`
-                : `${dateStr(detail.occDate)} · ${toAmPm(detail.start)} – ${toAmPm(detail.end % 1440)}${ev.tz !== deviceTz ? ` (${tzLabel(ev.tz)})` : ""}`}
+                : `${dateStr(dDate)} · ${toAmPm(dStart)} – ${toAmPm(dEnd % 1440)}${ev.tz && ev.tz !== deviceTz ? ` (${tzLabel(ev.tz)})` : ""}`}
               {ev.repeat && ev.repeat !== "none" ? <div style={{ color: T.dim }} className="text-xs mt-0.5">↻ repeats {ev.repeat}{ev.repeatUntil ? ` until ${ev.repeatUntil}` : ""}</div> : null}
             </InfoRow>
             {ev.location && (
@@ -1356,6 +1384,7 @@ export default function Planner() {
   const [showEmail, setShowEmail] = useState(false);
   const [emailInbox, setEmailInbox] = useState(null); /* {address?|unconfigured, suggestions:[]} */
   const [emailErr, setEmailErr] = useState("");
+  const [confirmSug, setConfirmSug] = useState(null);
   const [quickTitle, setQuickTitle] = useState("");
   const [newWait, setNewWait] = useState("");
   const [saveState, setSaveState] = useState("idle");
@@ -1532,9 +1561,10 @@ export default function Planner() {
 
   const acceptSuggestion = async (row) => {
     const p = row.payload;
+    const tl = sugLocal(p);
     setEvents((es) => [...es, {
-      id: uid(), title: p.title, date: p.date, endDate: p.endDate || null,
-      allDay: !!p.allDay, start: p.allDay ? 0 : p.start, end: p.allDay ? 1440 : p.end,
+      id: uid(), title: p.title, date: tl.date, endDate: p.endDate || null,
+      allDay: !!p.allDay, start: p.allDay ? 0 : tl.start, end: p.allDay ? 1440 : tl.end,
       tz: deviceTz, color: "blue", repeat: "none", repeatUntil: null, exceptions: [],
       location: null, timeOff: false, calId: null,
       notes: [p.venue, p.details, row.subject ? `From: ${row.subject}` : ""].filter(Boolean).join("\n"),
@@ -1663,9 +1693,20 @@ export default function Planner() {
         });
       }
       for (const e of entries) {
+        /* Z-stamped feed times carry the utc instant — place them at the
+           viewer's wall clock (parsers no longer bake in an environment tz) */
+        let eDate = e.date, eStart = e.start, eEnd = e.end;
+        if (!e.allDay && e.startUtcMs != null) {
+          const sw = utcToWall(e.startUtcMs, deviceTz);
+          eDate = sw.date; eStart = sw.minutes;
+          if (e.endUtcMs != null) {
+            const ew = utcToWall(e.endUtcMs, deviceTz);
+            eEnd = ew.date === sw.date ? Math.max(ew.minutes, sw.minutes + 15) : 1440;
+          } else eEnd = Math.min(1440, sw.minutes + Math.max(15, e.end - e.start));
+        }
         const mk = (date, endDate, suffix = "") => out.push({
           id: `ics_${cal.id}_${e.uid}${suffix}`, title: e.title, date, endDate,
-          allDay: e.allDay, start: e.start, end: e.end, tz: deviceTz, repeat: "none",
+          allDay: e.allDay, start: eStart, end: eEnd, tz: deviceTz, repeat: "none",
           exceptions: [], location: null, color: cal.color, icsCal: cal.id, holiday: !!cal.holiday, notes: "", checklist: [],
         });
         if (e.yearly) {
@@ -1673,8 +1714,8 @@ export default function Planner() {
             if (y < +e.date.slice(0, 4)) continue;
             mk(`${y}-${p2(e.month)}-${p2(e.day)}`, null, `_${y}`);
           }
-        } else if (e.date <= range.end && (e.endDate || e.date) >= range.start) {
-          mk(e.date, e.endDate);
+        } else if (eDate <= range.end && (e.endDate || eDate) >= range.start) {
+          mk(eDate, e.endDate);
         }
       }
     }
@@ -1688,11 +1729,25 @@ export default function Planner() {
     [events, disabledCals]
   );
 
+  /* pending email suggestions as preliminary blocks — render-only, never
+     scheduled around, tap to confirm */
+  const suggestionEvents = useMemo(() => (emailInbox?.suggestions || []).map((row) => {
+    const p = row.payload;
+    const tl = sugLocal(p);
+    return {
+      id: `sug_${row.id}`, title: p.title, date: tl.date, endDate: p.endDate || null,
+      allDay: !!p.allDay, start: p.allDay ? 0 : tl.start, end: p.allDay ? 1440 : tl.end,
+      tz: deviceTz, repeat: "none", repeatUntil: null, exceptions: [], location: null,
+      color: "gray", suggestion: true, sugId: row.id, notes: "", checklist: [],
+    };
+  }), [emailInbox]);
+
   const occurrences = useMemo(() => {
     const evOcc = expandOccurrences(visibleEvents, range.start, range.end, deviceTz);
     const icsOcc = expandOccurrences(icsEvents, range.start, range.end, deviceTz);
-    return [...evOcc, ...icsOcc];
-  }, [visibleEvents, range, icsEvents]);
+    const sugOcc = expandOccurrences(suggestionEvents, range.start, range.end, deviceTz);
+    return [...evOcc, ...icsOcc, ...sugOcc];
+  }, [visibleEvents, range, icsEvents, suggestionEvents]);
   const schedule = useMemo(() => scheduleTasks(tasks, events, categories, now, deviceTz, waiting), [tasks, events, categories, now, waiting]);
 
   const timedByDay = useMemo(() => {
@@ -1787,6 +1842,11 @@ export default function Planner() {
 
   const openEvent = useCallback((occ) => {
     if (dragRef.current?.moved) return;
+    if (occ.ev.suggestion) {
+      const row = (emailInbox?.suggestions || []).find((r) => r.id === occ.ev.sugId);
+      if (row) setConfirmSug(row);
+      return;
+    }
     if (isMobile) {
       /* full-screen info panel; holiday/subscribed items are read-only and
          aren't in the events array, so carry a snapshot */
@@ -1796,7 +1856,7 @@ export default function Planner() {
     }
     if (occ.ev.holiday || occ.ev.icsCal) return; /* read-only */
     setItemDraft({ ...occ.ev, itemType: occ.ev.timeOff ? "timeoff" : "event", occDate: occ.occDate });
-  }, [isMobile]);
+  }, [isMobile, emailInbox]);
   const openTask = useCallback((t) => {
     if (dragRef.current?.moved) return;
     if (isMobile) { setDetail({ type: "task", id: t.id }); return; }
@@ -1868,6 +1928,7 @@ export default function Planner() {
   /* ---------- drag / resize existing blocks ---------- */
   const beginDrag = useCallback((e, target, mode) => {
     if (e.button !== undefined && e.button !== 0) return;
+    if (target.type === "event" && (target.occ.ev.suggestion || target.occ.ev.icsCal || target.occ.ev.holiday)) return;
     e.stopPropagation();
     const isTouch = e.pointerType === "touch";
     const disp = target.type === "event"
@@ -2302,11 +2363,12 @@ export default function Planner() {
                 </div>
                 {emailInbox.suggestions.map((row) => {
                   const p = row.payload;
+                  const tl = sugLocal(p);
                   return (
                     <div key={row.id} className="mx-2 mb-1.5 rounded-xl px-2.5 py-2" style={{ background: T.surface2 }}>
                       <div className="text-sm font-medium truncate" style={{ color: T.text }}>{p.title}</div>
                       <div className="text-[11px] truncate" style={{ color: T.dim }}>
-                        {p.date}{p.endDate ? ` – ${p.endDate}` : ""}{p.allDay ? " · all day" : ` · ${toAmPm(p.start)}`}{p.venue ? ` · ${p.venue}` : ""}
+                        {tl.date}{p.endDate ? ` – ${p.endDate}` : ""}{p.allDay ? " · all day" : ` · ${toAmPm(tl.start)}`}{p.venue ? ` · ${p.venue}` : ""}
                       </div>
                       <div className="flex gap-1.5 mt-1.5">
                         <button onClick={() => acceptSuggestion(row)} className="flex-1 rounded-lg py-1 text-xs font-semibold text-white" style={{ background: T.ok }}>Add</button>
@@ -2452,6 +2514,23 @@ export default function Planner() {
             }}
             onToggleTask={toggleTask} onToggleEvCheck={toggleEvCheck} onToggleTaskCheck={toggleTaskCheck} openMaps={openMaps} />
         )}
+        {confirmSug && (() => {
+          const p = confirmSug.payload;
+          const tl = sugLocal(p);
+          return (
+            <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,.45)" }} onClick={() => setConfirmSug(null)}>
+              <div className="rounded-2xl p-4 w-full max-w-xs" style={{ background: T.surface, boxShadow: T.shadow }} onClick={(e) => e.stopPropagation()}>
+                <div className="text-sm font-bold mb-1" style={{ color: T.text }}>Add to calendar?</div>
+                <div className="text-sm font-medium" style={{ color: T.text }}>{p.title}</div>
+                <div className="text-[11px] mb-3" style={{ color: T.dim }}>{tl.date}{p.endDate ? ` – ${p.endDate}` : ""}{p.allDay ? " · all day" : ` · ${toAmPm(tl.start)} – ${toAmPm(tl.end % 1440)}`}</div>
+                <div className="flex gap-2">
+                  <button className="flex-1 rounded-xl py-2 text-sm font-medium" style={{ background: T.surface2, color: T.dim }} onClick={() => setConfirmSug(null)}>Not now</button>
+                  <button className="flex-1 rounded-xl py-2 text-sm font-semibold text-white" style={{ background: T.ok }} onClick={() => { acceptSuggestion(confirmSug); setConfirmSug(null); }}>Add</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         {showEmail && (
           <Modal title="Email import" onClose={() => setShowEmail(false)}>
             {emailInbox?.address ? (

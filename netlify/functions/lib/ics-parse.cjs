@@ -26,8 +26,8 @@ function parseStamp(val, params) {
   if (!m) return null;
   const [, y, mo, d, h, mi, se, z] = m;
   if (z) {
-    const dt = new Date(Date.UTC(+y, +mo - 1, +d, +h, +mi, +(se || 0)));
-    return { date: `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`, minutes: dt.getHours() * 60 + dt.getMinutes() };
+    const utcMs = Date.UTC(+y, +mo - 1, +d, +h, +mi, +(se || 0));
+    return { date: `${y}-${mo}-${d}`, minutes: +h * 60 + +mi, utcMs };
   }
   /* floating or TZID: treat as wall time (right for the common cases) */
   return { date: `${y}-${mo}-${d}`, minutes: +h * 60 + +mi };
@@ -90,6 +90,8 @@ function parseICS(text) {
       endDate,
       start: allDay ? 0 : start.minutes,
       end: allDay ? 1440 : Math.max((endMin ?? start.minutes + 60), start.minutes + 15),
+      startUtcMs: allDay ? null : start.utcMs ?? null,
+      endUtcMs: allDay ? null : (e.DTEND && parseStamp(e.DTEND.val, e.DTEND.params)?.utcMs) ?? null,
       yearly,
       month: +start.date.slice(5, 7),
       day: +start.date.slice(8, 10),

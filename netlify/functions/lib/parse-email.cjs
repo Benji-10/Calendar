@@ -16,7 +16,11 @@ function parseIsoStamp(v) {
   if (!v || typeof v !== "string") return null;
   const m = v.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}))?/);
   if (!m) return null;
-  return { date: `${m[1]}-${m[2]}-${m[3]}`, minutes: m[4] ? +m[4] * 60 + +m[5] : null };
+  /* an explicit offset/Z pins the actual instant — carry it so the client
+     can show the viewer's local time (HK 4pm -> UK 9am) */
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/.test(v.trim());
+  const utcMs = m[4] && hasOffset ? Date.parse(v) : null;
+  return { date: `${m[1]}-${m[2]}-${m[3]}`, minutes: m[4] ? +m[4] * 60 + +m[5] : null, utcMs: Number.isFinite(utcMs) ? utcMs : null };
 }
 
 function cleanSubject(s) {
@@ -62,6 +66,7 @@ function suggestionFromNode(node) {
       title: `Flight ${flight}${route ? ` ${route}` : ""}`.trim(),
       date: dep.date, endDate: null, allDay: dep.minutes == null,
       start: dep.minutes ?? 0, end: dep.minutes == null ? 1440 : Math.max(end, dep.minutes + 30),
+      startUtcMs: dep.utcMs ?? null, endUtcMs: arr?.utcMs ?? null,
       venue: nameOf(r.departureAirport),
       details: [r.reservationNumber || node.reservationNumber, arr && arr.date !== dep.date ? `arrives ${arr.date}` : null].filter(Boolean).join(" · "),
     };
@@ -92,6 +97,7 @@ function suggestionFromNode(node) {
       title: `${t === "BusReservation" ? "Bus" : "Train"}${route ? ` ${route}` : ""}`,
       date: dep.date, endDate: null, allDay: dep.minutes == null,
       start: dep.minutes ?? 0, end: dep.minutes == null ? 1440 : Math.max(end, dep.minutes + 15),
+      startUtcMs: dep.utcMs ?? null, endUtcMs: arr?.utcMs ?? null,
       venue: nameOf(r.departureStation || r.departureBusStop),
       details: node.reservationNumber || "",
     };
@@ -105,6 +111,7 @@ function suggestionFromNode(node) {
       title: `Reservation: ${nameOf(r) || "table"}`,
       date: st.date, endDate: null, allDay: st.minutes == null,
       start: st.minutes ?? 0, end: st.minutes == null ? 1440 : Math.min(1440, st.minutes + 90),
+      startUtcMs: st.utcMs ?? null, endUtcMs: null,
       venue: nameOf(r),
       details: node.partySize ? `party of ${node.partySize}` : "",
     };
@@ -123,6 +130,7 @@ function suggestionFromNode(node) {
       allDay: st.minutes == null,
       start: st.minutes ?? 0,
       end: st.minutes == null ? 1440 : en && en.date === st.date && en.minutes != null ? Math.max(en.minutes, st.minutes + 15) : Math.min(1440, st.minutes + 120),
+      startUtcMs: st.utcMs ?? null, endUtcMs: en?.utcMs ?? null,
       venue: (ev.location && nameOf(ev.location)) || "",
       details: "",
     };
@@ -223,6 +231,7 @@ function suggestionsFromIcsAttachments(attachments) {
           title: e.title,
           date: e.date, endDate: e.endDate || null,
           allDay: e.allDay, start: e.start, end: e.end,
+          startUtcMs: e.startUtcMs ?? null, endUtcMs: e.endUtcMs ?? null,
           venue: "",
           details: "from attached calendar file",
         });

@@ -101,3 +101,45 @@ END:VCALENDAR`;
     expect(s.start).toBe(600);
   });
 });
+
+describe("timezone instants", () => {
+  it("carries the utc instant for Z-stamped ics attachments", () => {
+    const ics = `BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260706T125500Z
+DTEND:20260706T141700Z
+SUMMARY:Split Ticketing
+UID:split@test
+END:VEVENT
+END:VCALENDAR`;
+    const [s] = parseEmail({ subject: "Fwd: Booking", html: "", text: "",
+      attachments: [{ name: "trip.ics", contentType: "text/calendar", content: Buffer.from(ics).toString("base64") }] });
+    expect(s.startUtcMs).toBe(Date.UTC(2026, 6, 6, 12, 55));
+    expect(s.endUtcMs).toBe(Date.UTC(2026, 6, 6, 14, 17));
+  });
+  it("pins the instant for offset-bearing JSON-LD times", () => {
+    const html = `<script type="application/ld+json">
+{"@type":"FlightReservation","reservationFor":{"@type":"Flight","flightNumber":"250",
+ "airline":{"iataCode":"CX"},"departureAirport":{"iataCode":"HKG"},"arrivalAirport":{"iataCode":"LHR"},
+ "departureTime":"2026-08-01T16:00:00+08:00","arrivalTime":"2026-08-01T22:05:00+01:00"}}
+</script>`;
+    const [s] = parseEmail({ subject: "Your flight", html, text: "" });
+    /* wall time as written stays for reference; the instant enables local display */
+    expect(s.start).toBe(16 * 60);
+    expect(s.startUtcMs).toBe(Date.UTC(2026, 7, 1, 8, 0));
+    expect(s.endUtcMs).toBe(Date.UTC(2026, 7, 1, 21, 5));
+  });
+  it("leaves floating times without an instant", () => {
+    const ics = `BEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260720T233500
+SUMMARY:Local thing
+UID:float@test
+END:VEVENT
+END:VCALENDAR`;
+    const [s] = parseEmail({ subject: "x", html: "", text: "",
+      attachments: [{ name: "a.ics", contentType: "text/calendar", content: Buffer.from(ics).toString("base64") }] });
+    expect(s.startUtcMs).toBeNull();
+    expect(s.start).toBe(23 * 60 + 35);
+  });
+});
