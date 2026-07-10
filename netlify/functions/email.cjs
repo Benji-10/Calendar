@@ -51,7 +51,13 @@ function normalizeInbound(body) {
   const from = (body.headers && body.headers.from) || body.From || body.from || "";
   const text = body.plain || body.TextBody || body.text || "";
   const html = body.html || body.HtmlBody || "";
-  return { to: String(to), subject: String(subject), from: String(from), text: String(text), html: String(html) };
+  const rawAtt = body.attachments || body.Attachments || [];
+  const attachments = (Array.isArray(rawAtt) ? rawAtt : []).slice(0, 10).map((a) => ({
+    name: a.file_name || a.fileName || a.Name || a.name || "",
+    contentType: a.content_type || a.ContentType || a.type || "",
+    content: a.content || a.Content || "",
+  }));
+  return { to: String(to), subject: String(subject), from: String(from), text: String(text), html: String(html), attachments };
 }
 
 exports.handler = async (event, context) => {

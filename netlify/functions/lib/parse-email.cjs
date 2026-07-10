@@ -5,6 +5,8 @@
    the plain text with the subject as the title. CommonJS so the Netlify
    function can require() it; tests import it the same way. */
 
+const { parseICS } = require("./ics-parse.cjs");
+
 const pad = (n) => String(n).padStart(2, "0");
 
 /* "2026-07-12T14:30:00+01:00" | "2026-07-12" -> {date, minutes|null}
@@ -133,35 +135,36 @@ function suggestionFromNode(node) {
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
-function findDate(text) {
-  let m = text.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  /* "12 July 2026" / "12 Jul 2026" */
-  m = text.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(\d{4})\b/i);
-  if (m) return `${m[3]}-${pad(MONTHS.indexOf(m[2].toLowerCase()) + 1)}-${pad(+m[1])}`;
-  /* "July 12, 2026" */
-  m = text.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/i);
-  if (m) return `${m[3]}-${pad(MONTHS.indexOf(m[1].toLowerCase()) + 1)}-${pad(+m[2])}`;
-  /* 12/07/2026 — day-first (GB convention) unless first part can't be a day */
-  m = text.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/);
-  if (m) {
+function findDates(text) {
+  const out = [];
+  let m;
+  const re1 = /\b(\d{4})-(\d{2})-(\d{2})\b/g;
+  while ((m = re1.exec(text))) out.push({ date: `${m[1]}-${m[2]}-${m[3]}`, idx: m.index });
+  const re2 = /\b(\d{1,2})(?:st|nd|rd|th)?\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+(\d{4})\b/gi;
+  while ((m = re2.exec(text))) out.push({ date: `${m[3]}-${pad(MONTHS.indexOf(m[2].toLowerCase()) + 1)}-${pad(+m[1])}`, idx: m.index });
+  const re3 = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b/gi;
+  while ((m = re3.exec(text))) out.push({ date: `${m[3]}-${pad(MONTHS.indexOf(m[1].toLowerCase()) + 1)}-${pad(+m[2])}`, idx: m.index });
+  const re4 = /\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g;
+  while ((m = re4.exec(text))) {
     const a = +m[1], b = +m[2];
     const [day, mon] = a > 12 ? [a, b] : b > 12 ? [b, a] : [a, b];
-    if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) return `${m[3]}-${pad(mon)}-${pad(day)}`;
+    if (mon >= 1 && mon <= 12 && day >= 1 && day <= 31) out.push({ date: `${m[3]}-${pad(mon)}-${pad(day)}`, idx: m.index });
   }
-  return null;
+  return out.sort((a, b) => a.idx - b.idx);
 }
 
-function findTime(text) {
-  let m = text.match(/\b(\d{1,2}):(\d{2})\s*(am|pm)\b/i);
-  if (m) {
+function findTimes(text) {
+  const out = [];
+  let m;
+  const re1 = /\b(\d{1,2}):(\d{2})\s*(am|pm)\b/gi;
+  while ((m = re1.exec(text))) {
     let h = +m[1] % 12;
     if (m[3].toLowerCase() === "pm") h += 12;
-    return h * 60 + +m[2];
+    out.push({ min: h * 60 + +m[2], idx: m.index });
   }
-  m = text.match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
-  if (m) return +m[1] * 60 + +m[2];
-  return null;
+  const re2 = /\b([01]?\d|2[0-3]):([0-5]\d)\b(?!\s*(?:am|pm))/gi;
+  while ((m = re2.exec(text))) out.push({ min: +m[1] * 60 + +m[2], idx: m.index });
+  return out.sort((a, b) => a.idx - b.idx);
 }
 
 const KIND_WORDS = [
@@ -173,19 +176,27 @@ const KIND_WORDS = [
 ];
 
 function heuristicSuggestion(subject, text) {
-  /* drop forwarded-header lines (From:/Date:/Sent:/...) so the email's own
-     send-date can't masquerade as the event date */
-  const cleaned = (text || "").split("\n").filter((l) => !/^\s*>?\s*(from|date|sent|to|cc|subject)\s*:/i.test(l)).join("\n");
+  /* drop forwarded-header and attribution lines (From:/Date:/"On ... wrote:")
+     so the email's own send-date can't masquerade as the event date */
+  const cleaned = (text || "").split("\n")
+    .filter((l) => !/^\s*>?\s*(from|date|sent|to|cc|subject)\s*:/i.test(l))
+    .filter((l) => !/^\s*>?\s*on\s.{4,90}\swrote:?\s*$/i.test(l))
+    .join("\n");
   const hay = `${subject}\n${cleaned}`.slice(0, 6000);
-  const date = findDate(hay);
-  if (!date) return null;
-  const time = findTime(hay);
+  const dates = findDates(hay);
+  if (!dates.length) return null;
+  /* the event is ahead of you; the email's residual timestamps are behind */
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const chosen = dates.find((d) => d.date >= todayKey) || dates[0];
+  const times = findTimes(hay);
+  const near = times.filter((t) => Math.abs(t.idx - chosen.idx) <= 300).sort((a, b) => Math.abs(a.idx - chosen.idx) - Math.abs(b.idx - chosen.idx))[0];
+  const time = near ? near.min : null;
   let kind = "email";
   for (const [k, re] of KIND_WORDS) if (re.test(hay)) { kind = k; break; }
   return {
     kind,
     title: cleanSubject(subject) || "From email",
-    date, endDate: null,
+    date: chosen.date, endDate: null,
     allDay: time == null,
     start: time ?? 0,
     end: time == null ? 1440 : Math.min(1440, time + 60),
@@ -194,11 +205,44 @@ function heuristicSuggestion(subject, text) {
   };
 }
 
+/* ---------- attached .ics: the most authoritative source ---------- */
+
+function suggestionsFromIcsAttachments(attachments) {
+  const out = [];
+  for (const a of attachments || []) {
+    const name = (a.name || "").toLowerCase();
+    const type = (a.contentType || "").toLowerCase();
+    if (!name.endsWith(".ics") && !type.includes("calendar")) continue;
+    if (!a.content || a.content.length > 2_000_000) continue;
+    let text;
+    try { text = Buffer.from(a.content, "base64").toString("utf8"); } catch { continue; }
+    try {
+      for (const e of parseICS(text)) {
+        out.push({
+          kind: "calendar",
+          title: e.title,
+          date: e.date, endDate: e.endDate || null,
+          allDay: e.allDay, start: e.start, end: e.end,
+          venue: "",
+          details: "from attached calendar file",
+        });
+      }
+    } catch { /* malformed attachment — other sources still apply */ }
+  }
+  return out;
+}
+
 /* ---------- entry ---------- */
 
-function parseEmail({ subject, html, text }) {
+function parseEmail({ subject, html, text, attachments }) {
   const out = [];
   const seen = new Set();
+  for (const s of suggestionsFromIcsAttachments(attachments)) {
+    const key = `${s.title}_${s.date}_${s.start}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
   for (const node of extractJsonLd(html)) {
     const s = suggestionFromNode(node);
     if (!s) continue;

@@ -231,3 +231,13 @@ Functions are .cjs and netlify/functions/package.json pins the directory to
 CommonJS, so the Node 24 runtime can't misread them as ES modules even if a
 stray .js survives. The deploy log's "Functions bundling" section should
 list exactly: data.cjs, email.cjs, ics.cjs.
+
+## Email parsing quality
+Sources, in order of authority: (1) attached .ics calendar files — exact
+times, multi-leg trips (make sure CloudMailin's webhook format EMBEDS
+attachments in the JSON rather than storing them externally); (2) schema.org
+JSON-LD in the HTML (survives auto-forward filters, usually stripped by
+manual Fwd:); (3) text heuristics — attribution/header lines removed,
+future dates preferred over the email's own timestamps, time taken from
+near the chosen date. PDF attachments are not parsed (OCR territory); the
+.ics and auto-forward paths cover those senders better.
