@@ -193,14 +193,21 @@ function heuristicSuggestion(subject, text) {
   const hay = `${subject}\n${cleaned}`.slice(0, 6000);
   const dates = findDates(hay);
   if (!dates.length) return null;
+  /* precision gate: a bare date is not an event — require either a category
+     keyword (flight/hotel/...) or booking-confirmation language plus a time */
+  const kindHit = KIND_WORDS.some(([, re]) => re.test(hay));
+  const confirmish = /\b(confirm(?:ed|ation)?|booking|booked|reservation|itinerary|ticket|reference|e-?ticket)\b/i.test(hay);
+  if (!kindHit && !confirmish) return null;
   /* the event is ahead of you; the email's residual timestamps are behind */
   const todayKey = new Date().toISOString().slice(0, 10);
   const chosen = dates.find((d) => d.date >= todayKey) || dates[0];
   const times = findTimes(hay);
   const near = times.filter((t) => Math.abs(t.idx - chosen.idx) <= 300).sort((a, b) => Math.abs(a.idx - chosen.idx) - Math.abs(b.idx - chosen.idx))[0];
   const time = near ? near.min : null;
+  if (!kindHit && time == null) return null; /* confirmation words alone need a concrete time */
   let kind = "email";
   for (const [k, re] of KIND_WORDS) if (re.test(hay)) { kind = k; break; }
+  const refM = hay.match(/\b(?:booking|confirmation|reservation|order)?\s*ref(?:erence)?\s*[:#\-]?\s*([A-Z0-9]{5,12})\b/i);
   return {
     kind,
     title: cleanSubject(subject) || "From email",
@@ -209,8 +216,92 @@ function heuristicSuggestion(subject, text) {
     start: time ?? 0,
     end: time == null ? 1440 : Math.min(1440, time + 60),
     venue: "",
-    details: "parsed from email text — check the details",
+    details: [refM ? `ref ${refM[1]}` : "", "parsed from email text — check the details"].filter(Boolean).join(" · "),
   };
+}
+
+/* ---------- inline VCALENDAR in the body (calendar invites often ride as a
+   text/calendar MIME part that lands in the text body) ---------- */
+
+function suggestionsFromInlineIcs(text, html) {
+  const out = [];
+  const scan = (src) => {
+    if (!src) return;
+    const re = /BEGIN:VCALENDAR[\s\S]*?END:VCALENDAR/g;
+    let m;
+    while ((m = re.exec(src))) {
+      try {
+        for (const e of parseICS(m[0])) {
+          out.push({
+            kind: "calendar",
+            title: e.title,
+            date: e.date, endDate: e.endDate || null,
+            allDay: e.allDay, start: e.start, end: e.end,
+            startUtcMs: e.startUtcMs ?? null, endUtcMs: e.endUtcMs ?? null,
+            venue: "",
+            details: "from calendar invite",
+          });
+        }
+      } catch { /* malformed block */ }
+    }
+  };
+  scan(text);
+  /* html may entity-encode the colons' surroundings; strip tags first */
+  scan(html ? html.replace(/<[^>]+>/g, "\n").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&") : "");
+  return out;
+}
+
+/* ---------- schema.org Microdata (itemscope/itemprop markup — the older
+   sibling of JSON-LD, still used by several airlines/booking senders) ---------- */
+
+function extractMicrodata(html) {
+  if (!html || !/itemscope/i.test(html)) return [];
+  const roots = [];
+  const stack = []; /* one frame per open itemscope: {node, depth} */
+  let depth = 0;
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:"[^"]*"|'[^']*'|[^'"<>])*?)(\/?)>/g;
+  const VOID = new Set(["meta", "link", "img", "br", "hr", "input", "time"]);
+  let m;
+  while ((m = tagRe.exec(html))) {
+    const [, closing, name, rawAttrs, selfClose] = m;
+    const tag = name.toLowerCase();
+    if (closing) {
+      depth--;
+      while (stack.length && stack[stack.length - 1].depth > depth) stack.pop();
+      continue;
+    }
+    const attrs = {};
+    const attrRe = /([a-zA-Z-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g;
+    let am;
+    while ((am = attrRe.exec(rawAttrs))) attrs[am[1].toLowerCase()] = am[2] ?? am[3] ?? am[4] ?? "";
+    const isVoid = VOID.has(tag) || !!selfClose;
+    const hasScope = "itemscope" in attrs;
+    const prop = attrs.itemprop;
+
+    let node = null;
+    if (hasScope) {
+      node = { "@type": (attrs.itemtype || "").split("/").pop() || "" };
+      if (prop && stack.length) stack[stack.length - 1].node[prop] = node;
+      else roots.push(node);
+    }
+    if (prop && !hasScope && stack.length) {
+      let val = attrs.content ?? attrs.datetime ?? (tag === "a" ? attrs.href : undefined);
+      if (val == null) {
+        /* simple text value: the run until the next tag */
+        const rest = html.slice(tagRe.lastIndex);
+        const cut = rest.indexOf("<");
+        val = (cut >= 0 ? rest.slice(0, cut) : rest).trim();
+      }
+      stack[stack.length - 1].node[prop] = String(val)
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+        .replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&nbsp;/g, " ");
+    }
+    if (!isVoid) {
+      depth++;
+      if (hasScope) stack.push({ node, depth });
+    }
+  }
+  return roots;
 }
 
 /* ---------- attached .ics: the most authoritative source ---------- */
@@ -246,12 +337,16 @@ function suggestionsFromIcsAttachments(attachments) {
 function parseEmail({ subject, html, text, attachments }) {
   const out = [];
   const seen = new Set();
-  for (const s of suggestionsFromIcsAttachments(attachments)) {
+  const take = (s) => {
     const key = `${s.title}_${s.date}_${s.start}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
     out.push(s);
-  }
+  };
+  /* source cascade, most authoritative first:
+     ics attachment -> inline invite -> JSON-LD -> Microdata -> heuristics */
+  for (const s of suggestionsFromIcsAttachments(attachments)) take(s);
+  for (const s of suggestionsFromInlineIcs(text, html)) take(s);
   for (const node of extractJsonLd(html)) {
     const s = suggestionFromNode(node);
     if (!s) continue;
@@ -259,6 +354,12 @@ function parseEmail({ subject, html, text, attachments }) {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(s);
+  }
+  if (!out.length) {
+    for (const node of extractMicrodata(html)) {
+      const s = suggestionFromNode(node);
+      if (s) take(s);
+    }
   }
   if (!out.length) {
     const h = heuristicSuggestion(subject, text || (html || "").replace(/<[^>]+>/g, " "));

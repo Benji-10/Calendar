@@ -2155,10 +2155,111 @@ export default function Planner() {
   /* ---------- multitouch: pinch to zoom (vertical, anchored at the pinch
      centre) / switch view (horizontal), plus horizontal swipe that snaps
      day-by-day as the finger keeps moving ---------- */
+  const resetGesture = useCallback(() => {
+    const g = gestureRef.current;
+    if (!g) return;
+    window.removeEventListener("pointermove", g.move);
+    window.removeEventListener("pointerup", g.up);
+    window.removeEventListener("pointercancel", g.up);
+    const el = gridBodyRef.current;
+    if (el) { el.style.transform = ""; el.style.transformOrigin = ""; }
+    gestureRef.current = null;
+  }, []);
+
+  /* iOS occasionally swallows a pointerup, leaving a ghost finger in the map
+     forever — after that, every one-finger touch "is" a pinch and long-press
+     create dies. TouchEvent.touches is ground truth for how many fingers are
+     really down, so reconcile against it and drop the oldest (= ghost) extras. */
+  useEffect(() => {
+    const sync = (e) => {
+      const g = gestureRef.current;
+      if (!g) return;
+      if (e.touches.length === 0) { resetGesture(); return; }
+      while (g.pts.size > e.touches.length) {
+        const oldest = g.pts.keys().next().value;
+        g.pts.delete(oldest);
+      }
+      if (g.pts.size < 2 && g.pinching) {
+        /* the "pinch" was ghost-driven — abandon it, don't commit its zoom */
+        g.pinching = false;
+        g.lastR = null;
+        const el = gridBodyRef.current;
+        if (el) { el.style.transform = ""; el.style.transformOrigin = ""; }
+      }
+    };
+    window.addEventListener("touchstart", sync, { passive: true });
+    window.addEventListener("touchend", sync, { passive: true });
+    window.addEventListener("touchcancel", sync, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", sync);
+      window.removeEventListener("touchend", sync);
+      window.removeEventListener("touchcancel", sync);
+    };
+  }, [resetGesture]);
+
   const onGridPointerDown = useCallback((e) => {
     if (e.pointerType !== "touch") return;
-    const g = gestureRef.current || (gestureRef.current = { pts: new Map() });
-    g.pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    let g = gestureRef.current;
+    if (!g) {
+      g = gestureRef.current = { pts: new Map() };
+      g.move = (ev) => {
+        const pt = g.pts.get(ev.pointerId);
+        if (!pt) return;
+        pt.x = ev.clientX; pt.y = ev.clientY; pt.t = performance.now();
+
+        if (g.pinching && g.pts.size === 2) {
+          ev.preventDefault();
+          const [a, b] = [...g.pts.values()];
+          const dist = Math.hypot(a.x - b.x, a.y - b.y);
+          /* live zoom is a pure compositor transform — no React re-render per
+             frame, so it tracks the fingers at 60fps; the real layout commits
+             once on release. Sub-linear response keeps it from feeling twitchy. */
+          let r = Math.pow(dist / g.startDist, 0.65);
+          r = Math.min(HOUR_H_MAX / g.startHourH, Math.max(HOUR_H_MIN / g.startHourH, r));
+          g.lastR = r;
+          const el = gridBodyRef.current;
+          if (el && g.anchorContentY != null) {
+            el.style.transformOrigin = `0px ${g.anchorContentY}px`;
+            el.style.transform = `scaleY(${r})`;
+          }
+        } else if (g.pts.size === 1 && !g.pinching) {
+          if (dragRef.current && dragRef.current.active) return; /* a block drag / floating create owns this finger */
+          const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
+          if (!g.swipeAxis && (Math.abs(dx) > 24 || Math.abs(dy) > 24)) g.swipeAxis = Math.abs(dx) > Math.abs(dy) * 1.4 ? "h" : "v";
+          if (g.swipeAxis === "h") {
+            ev.preventDefault();
+            const STEP = 60; /* px of horizontal travel per day */
+            if (Math.abs(dx) >= STEP) {
+              stepDay(dx < 0 ? 1 : -1); /* swipe left -> forward */
+              g.swipeX0 = ev.clientX;   /* re-arm so a long drag keeps snapping day-by-day */
+            }
+          }
+        }
+      };
+      g.up = (ev) => {
+        g.pts.delete(ev.pointerId);
+        if (g.pts.size < 2 && g.pinching) {
+          g.pinching = false;
+          const el = gridBodyRef.current;
+          if (el) { el.style.transform = ""; el.style.transformOrigin = ""; }
+          if (g.lastR != null) {
+            const newH = Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * g.lastR)));
+            zoomAnchor.current = { minute: (g.anchorContentY / g.startHourH) * 60, offsetY: g.anchorOffsetY };
+            setHourH(newH);
+            g.lastR = null;
+          }
+        }
+        if (g.pts.size === 0) resetGesture();
+      };
+      window.addEventListener("pointermove", g.move, { passive: false });
+      window.addEventListener("pointerup", g.up);
+      window.addEventListener("pointercancel", g.up);
+    }
+
+    /* a pointer that hasn't reported anything in 8s is a ghost — expire it */
+    const now = performance.now();
+    for (const [id, p] of g.pts) if (now - (p.t || 0) > 8000) g.pts.delete(id);
+    g.pts.set(e.pointerId, { x: e.clientX, y: e.clientY, t: now });
 
     if (g.pts.size === 2) {
       const [a, b] = [...g.pts.values()];
@@ -2184,65 +2285,7 @@ export default function Planner() {
     } else if (g.pts.size === 1) {
       g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swipeAxis = null;
     }
-
-    const move = (ev) => {
-      const pt = g.pts.get(ev.pointerId);
-      if (!pt) return;
-      pt.x = ev.clientX; pt.y = ev.clientY;
-
-      if (g.pinching && g.pts.size === 2) {
-        ev.preventDefault();
-        const [a, b] = [...g.pts.values()];
-        const dist = Math.hypot(a.x - b.x, a.y - b.y);
-        /* live zoom is a pure compositor transform — no React re-render per
-           frame, so it tracks the fingers at 60fps; the real layout commits
-           once on release */
-        let r = dist / g.startDist;
-        r = Math.min(HOUR_H_MAX / g.startHourH, Math.max(HOUR_H_MIN / g.startHourH, r));
-        g.lastR = r;
-        const el = gridBodyRef.current;
-        if (el && g.anchorContentY != null) {
-          el.style.transformOrigin = `0px ${g.anchorContentY}px`;
-          el.style.transform = `scaleY(${r})`;
-        }
-      } else if (g.pts.size === 1 && !g.pinching) {
-        if (dragRef.current && dragRef.current.active) return; /* a block drag / floating create owns this finger */
-        const dx = ev.clientX - g.swipeX0, dy = ev.clientY - g.swipeY0;
-        if (!g.swipeAxis && (Math.abs(dx) > 24 || Math.abs(dy) > 24)) g.swipeAxis = Math.abs(dx) > Math.abs(dy) * 1.4 ? "h" : "v";
-        if (g.swipeAxis === "h") {
-          ev.preventDefault();
-          const STEP = 60; /* px of horizontal travel per day */
-          if (Math.abs(dx) >= STEP) {
-            stepDay(dx < 0 ? 1 : -1); /* swipe left -> forward */
-            g.swipeX0 = ev.clientX;   /* re-arm so a long drag keeps snapping day-by-day */
-          }
-        }
-      }
-    };
-    const up = (ev) => {
-      g.pts.delete(ev.pointerId);
-      if (g.pts.size < 2 && g.pinching) {
-        g.pinching = false;
-        const el = gridBodyRef.current;
-        if (el) { el.style.transform = ""; el.style.transformOrigin = ""; }
-        if (g.lastR != null) {
-          const newH = Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, g.startHourH * g.lastR)));
-          zoomAnchor.current = { minute: (g.anchorContentY / g.startHourH) * 60, offsetY: g.anchorOffsetY };
-          setHourH(newH);
-          g.lastR = null;
-        }
-      }
-      if (g.pts.size === 0) {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        window.removeEventListener("pointercancel", up);
-        gestureRef.current = null;
-      }
-    };
-    window.addEventListener("pointermove", move, { passive: false });
-    window.addEventListener("pointerup", up);
-    window.addEventListener("pointercancel", up);
-  }, [stepDay, clearTouchBlock]);
+  }, [stepDay, clearTouchBlock, resetGesture]);
 
   /* desktop wheel: ctrl/cmd+scroll zooms (anchored at the cursor),
      plain horizontal scroll (trackpad / shift+wheel) pages the days along */
@@ -2255,7 +2298,7 @@ export default function Planner() {
         const h = hourHRef.current;
         zoomAnchor.current = { minute: ((scrollRef.current.scrollTop + offsetY) / h) * 60, offsetY };
       }
-      setHourH((h) => Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, h * (e.deltaY < 0 ? 1.1 : 0.9)))));
+      setHourH((h) => Math.round(Math.min(HOUR_H_MAX, Math.max(HOUR_H_MIN, h * (e.deltaY < 0 ? 1.07 : 0.93)))));
       return;
     }
     const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;

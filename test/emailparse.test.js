@@ -143,3 +143,48 @@ END:VCALENDAR`;
     expect(s.start).toBe(23 * 60 + 35);
   });
 });
+
+describe("source cascade v3", () => {
+  it("parses an inline calendar invite in the text body", () => {
+    const text = `You're invited!\n\nBEGIN:VCALENDAR
+BEGIN:VEVENT
+DTSTART:20260801T170000Z
+DTEND:20260801T180000Z
+SUMMARY:Sarah's leaving drinks
+UID:inv1@test
+END:VEVENT
+END:VCALENDAR`;
+    const [s] = parseEmail({ subject: "Invitation", html: "", text });
+    expect(s.kind).toBe("calendar");
+    expect(s.title).toBe("Sarah's leaving drinks");
+    expect(s.startUtcMs).toBe(Date.UTC(2026, 7, 1, 17, 0));
+  });
+  it("parses Gmail-style Microdata reservations", () => {
+    const html = `<div itemscope itemtype="http://schema.org/TrainReservation">
+      <meta itemprop="reservationNumber" content="8B65GFFW"/>
+      <div itemprop="reservationFor" itemscope itemtype="http://schema.org/TrainTrip">
+        <div itemprop="departureStation" itemscope itemtype="http://schema.org/TrainStation">
+          <meta itemprop="name" content="Stowmarket"/></div>
+        <div itemprop="arrivalStation" itemscope itemtype="http://schema.org/TrainStation">
+          <meta itemprop="name" content="Heathrow T2 &amp; 3 Rail"/></div>
+        <meta itemprop="departureTime" content="2026-08-02T09:12:00+01:00"/>
+        <meta itemprop="arrivalTime" content="2026-08-02T11:04:00+01:00"/>
+      </div></div>`;
+    const [s] = parseEmail({ subject: "Your train tickets", html, text: "" });
+    expect(s.kind).toBe("train");
+    expect(s.title).toContain("Stowmarket");
+    expect(s.date).toBe("2026-08-02");
+    expect(s.start).toBe(9 * 60 + 12);
+    expect(s.startUtcMs).toBe(Date.UTC(2026, 7, 2, 8, 12));
+  });
+  it("suppresses bare dates without booking or category signals", () => {
+    const out = parseEmail({ subject: "Team notes", html: "", text: "Minutes from our chat on 21 July 2026. Next steps below." });
+    expect(out).toHaveLength(0);
+  });
+  it("still fires on confirmation language with a concrete time", () => {
+    const [s] = parseEmail({ subject: "Order 5512", html: "", text: "Your booking is confirmed for 30 July 2026 at 18:45. Ref TKQ88P." });
+    expect(s.date).toBe("2026-07-30");
+    expect(s.start).toBe(18 * 60 + 45);
+    expect(s.details).toContain("TKQ88P");
+  });
+});
