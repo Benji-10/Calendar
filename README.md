@@ -217,3 +217,17 @@ One-time server setup (~5 min):
 Suggestions poll on load/focus and every 5 minutes. Accepting creates a
 normal editable event (venue/reference go into its notes); timed
 suggestions use the clock time written in the email.
+
+## Updating an existing checkout from a zip
+Zips add and overwrite files but can't delete ones a newer version removed.
+After extracting over an existing tree, clear superseded function files —
+duplicate basenames make Netlify pick one arbitrarily:
+
+  rm -f netlify/functions/data.js netlify/functions/email.js \
+        netlify/functions/ics.js netlify/functions/parse-email.js \
+        netlify/functions/lib/parse-email.js
+
+Functions are .cjs and netlify/functions/package.json pins the directory to
+CommonJS, so the Node 24 runtime can't misread them as ES modules even if a
+stray .js survives. The deploy log's "Functions bundling" section should
+list exactly: data.cjs, email.cjs, ics.cjs.
