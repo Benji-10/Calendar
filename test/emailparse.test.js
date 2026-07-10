@@ -44,3 +44,20 @@ describe("parse-email", () => {
     expect(parseEmail({ subject: "Newsletter", html: "", text: "Hello! Great offers inside." })).toHaveLength(0);
   });
 });
+
+describe("forwarded emails", () => {
+  it("ignores the forwarded header's send-date and finds the travel date", () => {
+    const text = `---------- Forwarded message ---------
+From: Cathay Pacific <noreply@cathaypacific.com>
+Date: Wed, 8 Jul 2026 at 15:02
+Subject: Your boarding pass for flight CX238
+To: ben@example.com
+
+Your flight CX238 departs on 20 July 2026 at 23:35 from Gate 12.`;
+    const [s] = parseEmail({ subject: "Fwd: Your boarding pass for flight CX238 to Hong Kong", html: "", text });
+    expect(s.kind).toBe("flight");
+    expect(s.date).toBe("2026-07-20");
+    expect(s.start).toBe(23 * 60 + 35);
+    expect(s.title).toBe("Your boarding pass for flight CX238 to Hong Kong");
+  });
+});

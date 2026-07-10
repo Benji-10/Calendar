@@ -68,9 +68,14 @@ exports.handler = async (event, context) => {
     try { body = JSON.parse(event.body || "{}"); } catch { return json(400, { error: "bad json" }); }
     const mail = normalizeInbound(body);
     const tokenMatch = mail.to.match(/\+([a-z0-9]+)@/i);
-    if (!tokenMatch) return json(200, { ok: true, note: "no token in address" });
+    if (!tokenMatch) {
+      /* 4xx -> CloudMailin bounces this text back to the sender */
+      return json(403, { error: "This address needs your personal +token — copy the full forwarding address from Rollover's Email import screen." });
+    }
     const rows = await sql`SELECT user_id FROM planner_email_tokens WHERE token = ${tokenMatch[1].toLowerCase()}`;
-    if (!rows[0]) return json(200, { ok: true, note: "unknown token" });
+    if (!rows[0]) {
+      return json(403, { error: "This forwarding address isn't active — copy the current one from Rollover's Email import screen." });
+    }
     const userId = rows[0].user_id;
 
     const suggestions = parseEmail(mail);

@@ -173,7 +173,10 @@ const KIND_WORDS = [
 ];
 
 function heuristicSuggestion(subject, text) {
-  const hay = `${subject}\n${text || ""}`.slice(0, 6000);
+  /* drop forwarded-header lines (From:/Date:/Sent:/...) so the email's own
+     send-date can't masquerade as the event date */
+  const cleaned = (text || "").split("\n").filter((l) => !/^\s*>?\s*(from|date|sent|to|cc|subject)\s*:/i.test(l)).join("\n");
+  const hay = `${subject}\n${cleaned}`.slice(0, 6000);
   const date = findDate(hay);
   if (!date) return null;
   const time = findTime(hay);
