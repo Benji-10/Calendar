@@ -115,6 +115,13 @@ function TimeSelect({ value, onChange, from = 0, to = 1440, step = 15, disabled 
   const T = useT();
   const opts = [];
   for (let m = from; m <= to; m += step) opts.push(m);
+  /* imported/accepted events carry exact minutes (1:55 PM) that aren't on
+     the step grid — inject the live value so the select can display it,
+     instead of the browser silently showing its first option */
+  if (value != null && Number.isFinite(value) && !opts.includes(value)) {
+    opts.push(value);
+    opts.sort((a, b) => a - b);
+  }
   return (
     <select value={value} onChange={(e) => onChange(Number(e.target.value))} disabled={disabled}
       className="rounded-md px-2 py-1 text-sm disabled:opacity-40"
