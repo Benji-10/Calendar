@@ -98,6 +98,7 @@ function migrate(d) {
     out.categories = cats;
   }
   out.tasks = out.tasks.map((t) => ({ category: "work", scheduledAt: null, autoReschedule: true, completedSlot: null, dependsOn: null, waitingOn: null, notes: "", checklist: [], ...t }));
+  out.defaultCat = d.defaultCat && out.categories.some((c) => c.id === d.defaultCat) ? d.defaultCat : (out.categories[0] && out.categories[0].id) || "work";
   out.events = out.events.map((e) => ({ tz: deviceTz, repeat: "none", allDay: false, endDate: null, timeOff: false, exceptions: [], location: null, notes: "", checklist: [], calId: null, ...e }));
   out.waiting = d.waiting || [];
   out.icsCals = d.icsCals || [];
@@ -616,9 +617,10 @@ function ItemModal({ draft, events, tasks = [], waiting = [], userCals = [], cat
 }
 
 /* ---------- categories / hours editor ---------- */
-function CategoriesModal({ categories, onSave, onClose }) {
+function CategoriesModal({ categories, defaultCat, onSave, onClose }) {
   const T = useT();
   const [cats, setCats] = useState(() => JSON.parse(JSON.stringify(categories)));
+  const [defCat, setDefCat] = useState(defaultCat);
   const [sel, setSel] = useState(cats[0]?.id);
   const [ovDate, setOvDate] = useState("");
   const [ovOff, setOvOff] = useState(true);
@@ -629,10 +631,17 @@ function CategoriesModal({ categories, onSave, onClose }) {
 
   return (
     <Modal title="Hours & Categories" onClose={onClose} wide
-      footer={<button onClick={() => onSave(cats)} className="px-4 py-1.5 rounded-lg text-sm font-semibold text-white" style={{ background: T.accent }}>Save</button>}>
+      footer={<button onClick={() => onSave(cats, cats.some((c) => c.id === defCat) ? defCat : cats[0]?.id)} className="px-4 py-1.5 rounded-lg text-sm font-semibold text-white" style={{ background: T.accent }}>Save</button>}>
       <p className="text-xs mb-3" style={{ color: T.dim }}>
         Tasks only roll over inside their category's hours. Add a dated exception for holidays or one-off changes.
       </p>
+      <label className="flex items-center gap-2 text-xs mb-3" style={{ color: T.dim }}>
+        Default for new tasks
+        <select value={cats.some((c) => c.id === defCat) ? defCat : cats[0]?.id} onChange={(e) => setDefCat(e.target.value)}
+          className="rounded-lg px-2 py-1 text-xs" style={{ background: T.surface2, color: T.text, border: "none" }}>
+          {cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </label>
       <div className="flex gap-1.5 mb-3 flex-wrap">
         {cats.map((c) => (
           <button key={c.id} onClick={() => setSel(c.id)} className="rounded-full text-xs font-medium px-3 py-1.5"
@@ -724,7 +733,7 @@ function sugLocal(p) {
   return { date: sw.date, start: sw.minutes, end: Math.max(end, sw.minutes + 15) };
 }
 
-function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMaps }) {
+function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMaps, editing }) {
   const T = useT();
   if (dragPreview && dragPreview.key === occ.renderKey) return null;
   const c = colorSet(occ.ev.color, T.mode);
@@ -741,19 +750,25 @@ function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMa
     <div className={`absolute rounded-lg select-none group/ev ${sug ? "cursor-pointer" : "cursor-grab active:cursor-grabbing"}`}
       onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "move")}
       onClick={(e) => { e.stopPropagation(); openEvent(occ); }}
-      style={{ ...geomStyle(g), background: c.bg, ...(sug ? { border: `1.5px dashed ${c.border}`, opacity: 0.8 } : { borderLeft: `3px solid ${c.border}` }), zIndex: lay ? lay.z : 2, touchAction: "none" }}>
+      style={{ ...geomStyle(g), background: c.bg, ...(sug ? { border: `1.5px dashed ${c.border}`, opacity: 0.8 } : { borderLeft: `3px solid ${c.border}` }), ...(editing ? { boxShadow: `0 0 0 2px ${c.border}`, zIndex: 30 } : {}), zIndex: editing ? 30 : lay ? lay.z : 2, touchAction: "none" }}>
       <div className="px-1.5 py-0.5 pointer-events-none">
         <div className="text-xs font-semibold break-words" style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: clampLines, overflow: "hidden" }}>
           {sug ? "? " : occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}
         </div>
       </div>
-      <div className="absolute left-0 right-0 top-0 h-2 opacity-0 group-hover/ev:opacity-100 cursor-row-resize flex justify-center"
-        onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-start")} style={{ touchAction: "none" }}>
-        <div className="rounded-full mt-0.5" style={{ width: 24, height: 3, background: c.border, opacity: 0.7 }} />
+      <div className={`absolute left-0 right-0 flex justify-center cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100"}`}
+        onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-start")}
+        style={{ touchAction: "none", top: editing ? -14 : 0, height: editing ? 28 : 8 }}>
+        <div className="rounded-full" style={editing
+          ? { width: 40, height: 6, background: c.border, marginTop: 11, boxShadow: "0 1px 4px rgba(0,0,0,.35)" }
+          : { width: 24, height: 3, background: c.border, opacity: 0.7, marginTop: 2 }} />
       </div>
-      <div className="absolute left-0 right-0 bottom-0 h-2 opacity-0 group-hover/ev:opacity-100 cursor-row-resize flex justify-center items-end"
-        onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-end")} style={{ touchAction: "none" }}>
-        <div className="rounded-full mb-0.5" style={{ width: 24, height: 3, background: c.border, opacity: 0.7 }} />
+      <div className={`absolute left-0 right-0 flex justify-center items-end cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100"}`}
+        onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-end")}
+        style={{ touchAction: "none", bottom: editing ? -14 : 0, height: editing ? 28 : 8 }}>
+        <div className="rounded-full" style={editing
+          ? { width: 40, height: 6, background: c.border, marginBottom: 11, boxShadow: "0 1px 4px rgba(0,0,0,.35)" }
+          : { width: 24, height: 3, background: c.border, opacity: 0.7, marginBottom: 2 }} />
       </div>
     </div>
   );
@@ -854,7 +869,7 @@ function WeekStrip({ anchor, now, visibleN, onPickDay, onSwipeWeek }) {
 }
 
 /* ---------- time grid (week/day) ---------- */
-function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay, tasksByDay, layoutFor, unionWindows, scrollRef, gridBodyRef, gutter, dragPreview, createPreview, beginDrag, beginCreate, onGridPointerDown, openEvent, openTask, toggleTask, openMaps, transition }) {
+function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay, tasksByDay, layoutFor, unionWindows, scrollRef, gridBodyRef, gutter, dragPreview, createPreview, beginDrag, beginCreate, onGridPointerDown, openEvent, openTask, toggleTask, openMaps, transition, editBlockId }) {
   const T = useT();
   const nowTop = (nowMin / 60) * hourH;
   return (
@@ -922,7 +937,7 @@ function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay,
                 ))}
                 <div className="absolute inset-0" onPointerDown={(e) => beginCreate(e, key)} />
                 {laid.events.map(({ occ, lay }) => (
-                  <EventBlock key={occ.renderKey} occ={occ} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} />
+                  <EventBlock key={occ.renderKey} occ={occ} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} editing={editBlockId === occ.ev.id} />
                 ))}
                 {laid.tasks.map(({ item, lay }) => (
                   <TaskBlock key={"task_" + item.task.id + (item.done ? "_done" : "")} item={item} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openTask={openTask} toggleTask={toggleTask} />
@@ -1203,6 +1218,9 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   useEffect(() => { if (!item) onBack(); }, [item, onBack]);
   if (!item) return null;
 
+  const panelRef = useRef(null);
+  const edgeRef = useRef(null);
+
   /* live times for simple events: derive from the event itself (converted
      from its stored tz to this device) — captured detail times only cover
      repeats/midnight splits, where per-occurrence context matters */
@@ -1232,7 +1250,41 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   const noteParts = (item.notes || "").split(/(https?:\/\/[^\s]+)/g);
 
   return (
-    <div className={`fixed inset-0 z-40 flex flex-col ${closing ? "rl-detail-out" : "rl-detail-in"}`}
+    <div ref={panelRef} className={`fixed inset-0 z-40 flex flex-col ${closing ? "rl-detail-out" : "rl-detail-in"}`}
+      onTouchStart={(e) => {
+        const t = e.touches[0];
+        if (e.touches.length === 1 && t.clientX < 28) edgeRef.current = { x0: t.clientX, y0: t.clientY, on: false };
+      }}
+      onTouchMove={(e) => {
+        const sw = edgeRef.current;
+        if (!sw) return;
+        const t = e.touches[0];
+        const dx = t.clientX - sw.x0, dy = t.clientY - sw.y0;
+        if (!sw.on) {
+          if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) sw.on = true;
+          else if (Math.abs(dy) > 16) { edgeRef.current = null; return; }
+        }
+        if (sw.on && panelRef.current) {
+          panelRef.current.style.transition = "none";
+          panelRef.current.style.transform = `translateX(${Math.max(0, dx)}px)`;
+        }
+      }}
+      onTouchEnd={() => {
+        const sw = edgeRef.current;
+        edgeRef.current = null;
+        const el = panelRef.current;
+        if (!sw || !sw.on || !el) return;
+        const dx = parseFloat((el.style.transform.match(/-?[\d.]+/) || [0])[0]) || 0;
+        el.style.transition = "transform .18s ease-out";
+        if (dx > 70) {
+          el.style.animation = "none"; /* suppress the exit keyframes — the swipe IS the exit */
+          el.style.transform = "translateX(100%)";
+          setTimeout(onBack, 150);
+        } else {
+          el.style.transform = "";
+          setTimeout(() => { if (el) el.style.transition = ""; }, 200);
+        }
+      }}
       style={{ background: T.bg, paddingTop: "env(safe-area-inset-top)" }}>
       <div className="flex items-center px-2 py-2 border-b" style={{ borderColor: T.border }}>
         <button onClick={onBack} className="flex items-center gap-0.5 px-2 py-1 text-sm font-medium" style={{ color: T.accent }}>
@@ -1397,6 +1449,8 @@ export default function Planner() {
   const [showEmail, setShowEmail] = useState(false);
   const [emailInbox, setEmailInbox] = useState(null); /* {address?|unconfigured, suggestions:[]} */
   const [emailErr, setEmailErr] = useState("");
+  const [defaultCat, setDefaultCat] = useState("work");
+  const [editBlockId, setEditBlockId] = useState(null); /* mobile: block in resize-handle mode */
   const [confirmSug, setConfirmSug] = useState(null);
   const [quickTitle, setQuickTitle] = useState("");
   const [newWait, setNewWait] = useState("");
@@ -1411,6 +1465,29 @@ export default function Planner() {
   const [serverOk, setServerOk] = useState(false);
   const serverOkRef = useRef(false);
   const markServerOk = (v) => { serverOkRef.current = v; setServerOk(v); };
+  /* offline-first: edits that haven't reached the server yet survive
+     restarts via a persisted flag; the pull loop pushes them when it can */
+  const DIRTY_KEY = "planner-dirty-v1";
+  const [dirty, setDirty] = useState(() => { try { return !!localStorage.getItem(DIRTY_KEY); } catch { return false; } });
+  const markDirty = () => { try { localStorage.setItem(DIRTY_KEY, "1"); } catch { /* quota */ } setDirty(true); };
+  const clearDirty = () => { try { localStorage.removeItem(DIRTY_KEY); } catch { /* quota */ } setDirty(false); };
+  const hydratedRef = useRef(false);
+
+  useEffect(() => {
+    const set = () => {
+      const h = window.visualViewport ? Math.round(window.visualViewport.height) : window.innerHeight;
+      document.documentElement.style.setProperty("--app-h", `${h}px`);
+    };
+    set();
+    window.visualViewport?.addEventListener("resize", set);
+    window.addEventListener("resize", set);
+    window.addEventListener("orientationchange", set);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", set);
+      window.removeEventListener("resize", set);
+      window.removeEventListener("orientationchange", set);
+    };
+  }, []);
   const lastPushRef = useRef(0);
   const dataRef = useRef(null);
   const editSeqRef = useRef(0); /* bumped on every local edit; stale pulls compare against it */
@@ -1455,8 +1532,24 @@ export default function Planner() {
     return () => { window.removeEventListener("resize", measure); clearInterval(id); };
   }, [loaded, view]);
 
+  /* open instantly from the local mirror; the network reconciles in the
+     background. First-ever run (no mirror) falls through to the remote load. */
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return;
+      const m = migrate(JSON.parse(raw));
+      setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
+      setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals); setDefaultCat(m.defaultCat);
+      hydratedRef.current = true;
+      skipNextSave.current = true;
+      setLoaded(true);
+    } catch { /* corrupt mirror — the remote load below still runs */ }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!authReady) return;
+    if (hydratedRef.current) return; /* already open; the pull loop reconciles */
     let alive = true;
     (async () => {
       try {
@@ -1466,13 +1559,13 @@ export default function Planner() {
         if (d) {
           const m = migrate(d);
           setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-          setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
+          setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals); setDefaultCat(m.defaultCat);
         } else if (user) {
           const raw = localStorage.getItem(STORE_KEY);
           if (raw) {
             const m = migrate(JSON.parse(raw));
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals); setDefaultCat(m.defaultCat);
             saveData(user, m).catch(() => {});
           }
         }
@@ -1485,7 +1578,7 @@ export default function Planner() {
           if (raw && alive) {
             const m = migrate(JSON.parse(raw));
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals); setDefaultCat(m.defaultCat);
           }
         } catch { /* corrupt mirror — start empty */ }
       }
@@ -1502,18 +1595,23 @@ export default function Planner() {
     setSaveState("saving");
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
+      const toServer = !!(user && serverOkRef.current);
       try {
-        await saveData(user && serverOkRef.current ? user : null, { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals });
-        lastPushRef.current = Date.now();
+        await saveData(toServer ? user : null, { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals, defaultCat });
+        if (toServer) { lastPushRef.current = Date.now(); clearDirty(); }
+        else if (user) markDirty(); /* signed in but couldn't push — remember */
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 1500);
-      } catch (err) { setSaveState("error"); setSyncErr(explainSyncError(err)); }
+      } catch (err) {
+        if (user) markDirty(); /* mirror is written; the push is what failed */
+        setSaveState("error"); setSyncErr(explainSyncError(err));
+      }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals, loaded, user]);
+  }, [tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals, defaultCat, loaded, user]);
 
   /* ---------- periodic pull so all devices stay current ---------- */
-  dataRef.current = { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals };
+  dataRef.current = { tasks, events, categories, waiting, holidayCals, holidayCache, country, icsCals, userCals, defaultCat };
   useEffect(() => {
     if (!user || !loaded) return;
     let busy = false;
@@ -1527,6 +1625,16 @@ export default function Planner() {
       try {
         const d = await loadData(user);
         markServerOk(true);
+        if (localStorage.getItem(DIRTY_KEY)) {
+          /* this device has offline edits — they win; server history keeps
+             a snapshot of whatever they replace */
+          try {
+            await saveData(user, migrate(dataRef.current));
+            lastPushRef.current = Date.now();
+            clearDirty();
+          } catch { /* still offline-ish — next tick retries */ }
+          busy = false; return;
+        }
         /* a local edit (e.g. a delete) landed while this response was in
            flight — applying the stale server copy would silently undo it */
         if (editSeqRef.current !== seqAtStart) { busy = false; return; }
@@ -1535,12 +1643,13 @@ export default function Planner() {
           if (JSON.stringify(m) !== JSON.stringify(migrate(dataRef.current))) {
             skipNextSave.current = true;
             setTasks(m.tasks); setEvents(m.events); setCategories(m.categories); setWaiting(m.waiting);
-            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals);
+            setHolidayCals(m.holidayCals); setHolidayCache(m.holidayCache); setCountry(m.country); setIcsCals(m.icsCals); setUserCals(m.userCals); setDefaultCat(m.defaultCat);
           }
         }
       } catch { /* transient — next tick retries */ }
       busy = false;
     };
+    pull(); /* reconcile immediately — the app already opened from the mirror */
     const iv = setInterval(pull, 60000);
     const onWake = () => { if (!document.hidden) pull(); };
     document.addEventListener("visibilitychange", onWake);
@@ -1823,7 +1932,7 @@ export default function Planner() {
   const deleteTask = (id) => { setTasks((ts) => ts.filter((t) => t.id !== id)); setItemDraft(null); };
   const quickAdd = () => {
     if (!quickTitle.trim()) return;
-    setTasks((ts) => [...ts, { id: uid(), title: quickTitle.trim(), duration: 60, deadline: null, priority: 2, category: categories[0]?.id, done: false, createdAt: Date.now(), scheduledAt: null, autoReschedule: true, completedSlot: null }]);
+    setTasks((ts) => [...ts, { id: uid(), title: quickTitle.trim(), duration: 60, deadline: null, priority: 2, category: defaultCat || categories[0]?.id, done: false, createdAt: Date.now(), scheduledAt: null, autoReschedule: true, completedSlot: null }]);
     setQuickTitle("");
   };
   const CAL_COLORS = ["purple", "orange", "green", "blue", "red", "gray"];
@@ -1864,6 +1973,7 @@ export default function Planner() {
 
   const openEvent = useCallback((occ) => {
     if (dragRef.current?.moved) return;
+    setEditBlockId(null);
     if (occ.ev.suggestion) {
       const row = pendingSuggestions.find((r) => r.id === occ.ev.sugId);
       if (row) setConfirmSug(row);
@@ -1959,8 +2069,12 @@ export default function Planner() {
     const meta = target.type === "event"
       ? { title: target.occ.ev.title, colorName: target.occ.ev.color, dashed: false }
       : { title: target.item.task.title, colorName: PRIORITY[target.item.task.priority]?.c || "blue", dashed: true };
-    const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch, moved: false, dayDelta: 0, minDelta: 0, timer: null };
-    if (isTouch) st.timer = setTimeout(() => { st.active = true; if (navigator.vibrate) navigator.vibrate(15); }, 400);
+    const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch || mode !== "move", moved: false, dayDelta: 0, minDelta: 0, timer: null };
+    if (isTouch && mode === "move") st.timer = setTimeout(() => {
+      st.active = true;
+      if (target.type === "event") setEditBlockId(target.occ.ev.id); /* handles appear; drag continues as before */
+      if (navigator.vibrate) navigator.vibrate(15);
+    }, 400);
     dragRef.current = st;
 
     const move = (ev) => {
@@ -2292,6 +2406,7 @@ export default function Planner() {
       } /* cancel single-finger drag/create */
     } else if (g.pts.size === 1) {
       g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swipeAxis = null;
+      setEditBlockId(null); /* tapping the grid dismisses resize handles */
     }
   }, [stepDay, clearTouchBlock, resetGesture]);
 
@@ -2379,7 +2494,7 @@ export default function Planner() {
             </h2>
             <button className="text-[10px] text-left" style={{ color: saveState === "error" ? T.danger : T.faint, cursor: saveState === "error" ? "pointer" : "default" }}
               title={saveState === "error" ? syncErr : ""} onClick={() => { if (saveState === "error" && syncErr) setShowSyncErr((v) => !v); }}>
-              {saveState === "saving" ? (user ? "syncing…" : "saving…") : saveState === "saved" ? (user ? (serverOk ? "synced" : "saved here — sync paused") : "saved") : saveState === "error" ? "sync failed — tap for details" : ""}
+              {saveState === "saving" ? (user ? "syncing…" : "saving…") : saveState === "saved" ? (user ? (serverOk ? "synced" : "saved offline — will sync") : "saved") : saveState === "error" ? "sync failed — tap for details" : user && dirty ? "unsynced changes — will sync" : ""}
             </button>
             {showSyncErr && saveState === "error" && (
               <div className="text-[10px] mt-0.5 max-w-[190px]" style={{ color: T.danger }}>{syncErr}</div>
@@ -2389,7 +2504,7 @@ export default function Planner() {
           <div className="px-4 pb-3 flex gap-1.5">
             <input value={quickTitle} onChange={(e) => setQuickTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && quickAdd()}
               placeholder="Quick task — Enter to add" className="flex-1 rounded-lg px-3 py-2 text-sm min-w-0" style={inputStyle(T)} />
-            <button onClick={() => setItemDraft({ itemType: "task", title: quickTitle })} title="New task with details"
+            <button onClick={() => setItemDraft({ itemType: "task", title: quickTitle, category: defaultCat })} title="New task with details"
               className="rounded-lg text-white font-bold text-sm px-3" style={{ background: T.accent }}>＋</button>
           </div>
 
@@ -2551,7 +2666,7 @@ export default function Planner() {
                 onOpenDay={(d) => { setAnchor(centerOn(d)); changeView("week"); }} />
             </div>
           ) : (
-            <TimeGrid days={days} now={now} nowMin={nowMin} hourH={hourH} isMobile={isMobile} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay}
+            <TimeGrid days={days} now={now} nowMin={nowMin} hourH={hourH} isMobile={isMobile} allDayByDay={allDayByDay} timedByDay={timedByDay} tasksByDay={tasksByDay} editBlockId={editBlockId}
               layoutFor={layoutFor} unionWindows={unionWindows} scrollRef={scrollRef} gridBodyRef={gridBodyRef} gutter={gutter}
               dragPreview={dragPreview} createPreview={createPreview} beginDrag={beginDrag} beginCreate={beginCreate} onGridPointerDown={onGridPointerDown}
               openEvent={openEvent} openTask={openTask} toggleTask={toggleTask} openMaps={openMaps} transition={transition} />
@@ -2564,7 +2679,7 @@ export default function Planner() {
             onDeleteSeries={deleteSeries} onDeleteOccurrence={deleteOccurrence} onDeleteTask={deleteTask}
             onClose={() => setItemDraft(null)} />
         )}
-        {showCats && <CategoriesModal categories={categories} onSave={(cs) => { setCategories(cs); setShowCats(false); }} onClose={() => setShowCats(false)} />}
+        {showCats && <CategoriesModal categories={categories} defaultCat={defaultCat} onSave={(cs, dc) => { setCategories(cs); if (dc) setDefaultCat(dc); setShowCats(false); }} onClose={() => setShowCats(false)} />}
         {detail && (
           <DetailPanel detail={detail} closing={detailClosing} tasks={tasks} events={events} categories={categories}
             schedule={schedule} waiting={waiting} onBack={closeDetail}
