@@ -757,19 +757,23 @@ function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMa
           {sug ? "? " : occ.ev.repeat && occ.ev.repeat !== "none" ? "↻ " : ""}{occ.ev.title}
         </div>
       </div>
-      <div className={`absolute left-0 right-0 flex justify-center cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100"}`}
+      <div className={`absolute left-0 right-0 flex justify-center cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100 pointer-events-none sm:pointer-events-auto"}`}
         onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-start")}
-        style={{ touchAction: "none", top: editing ? -14 : 0, height: editing ? 28 : 8 }}>
-        <div className="rounded-full" style={editing
-          ? { width: 40, height: 6, background: c.border, marginTop: 11, boxShadow: "0 1px 4px rgba(0,0,0,.35)" }
-          : { width: 24, height: 3, background: c.border, opacity: 0.7, marginTop: 2 }} />
+        style={{ touchAction: "none", top: editing ? -16 : 0, height: editing ? 32 : 8 }}>
+        {editing ? (
+          <div className="rounded-full" style={{ width: 18, height: 18, background: c.border, border: `3px solid ${T.bg}`, boxShadow: "0 1px 6px rgba(0,0,0,.45)", marginTop: 7 }} />
+        ) : (
+          <div className="rounded-full" style={{ width: 24, height: 3, background: c.border, opacity: 0.7, marginTop: 2 }} />
+        )}
       </div>
-      <div className={`absolute left-0 right-0 flex justify-center items-end cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100"}`}
+      <div className={`absolute left-0 right-0 flex justify-center items-end cursor-row-resize ${editing ? "opacity-100" : "opacity-0 group-hover/ev:opacity-100 pointer-events-none sm:pointer-events-auto"}`}
         onPointerDown={(e) => beginDrag(e, { type: "event", occ }, "resize-end")}
-        style={{ touchAction: "none", bottom: editing ? -14 : 0, height: editing ? 28 : 8 }}>
-        <div className="rounded-full" style={editing
-          ? { width: 40, height: 6, background: c.border, marginBottom: 11, boxShadow: "0 1px 4px rgba(0,0,0,.35)" }
-          : { width: 24, height: 3, background: c.border, opacity: 0.7, marginBottom: 2 }} />
+        style={{ touchAction: "none", bottom: editing ? -16 : 0, height: editing ? 32 : 8 }}>
+        {editing ? (
+          <div className="rounded-full" style={{ width: 18, height: 18, background: c.border, border: `3px solid ${T.bg}`, boxShadow: "0 1px 6px rgba(0,0,0,.45)", marginBottom: 7 }} />
+        ) : (
+          <div className="rounded-full" style={{ width: 24, height: 3, background: c.border, opacity: 0.7, marginBottom: 2 }} />
+        )}
       </div>
     </div>
   );
@@ -2175,7 +2179,7 @@ export default function Planner() {
     if (isTouch && mode === "move" && !editingThis) st.timer = setTimeout(() => {
       setEditBlockId(targetId);
       if (navigator.vibrate) navigator.vibrate(15);
-      cleanup(); /* the press only armed edit mode — no drag from it */
+      st.editArmed = true; /* rest of this gesture is consumed: no drag, and no click on release */
     }, 400);
     dragRef.current = st;
 
@@ -2183,7 +2187,8 @@ export default function Planner() {
       const s = dragRef.current;
       if (!s) return;
       const dx = ev.clientX - s.x0, dy = ev.clientY - s.y0;
-      if (!s.active) { if (Math.hypot(dx, dy) > 10) { clearTimeout(s.timer); cleanup(); } return; }
+      if (s.editArmed) return; /* long-press already consumed this gesture */
+      if (!s.active) { if (Math.hypot(dx, dy) > 10) { clearTimeout(s.timer); s.moved = true; cleanup(); } return; }
       ev.preventDefault();
       if (Math.hypot(dx, dy) > 5) s.moved = true;
       if (!s.moved) return;
@@ -2209,7 +2214,8 @@ export default function Planner() {
       const s = dragRef.current;
       if (s) {
         clearTimeout(s.timer);
-        if (s.active && s.moved && s.preview) commitDrag(s);
+        if (s.editArmed) s.moved = true; /* release after long-press: block the click */
+        else if (s.active && s.moved && s.preview) commitDrag(s);
       }
       cleanup();
     };
@@ -2462,6 +2468,12 @@ export default function Planner() {
       };
       g.up = (ev) => {
         g.pts.delete(ev.pointerId);
+        if (g.swipeAxis === "h" && g.pts.size === 0 && !dragRef.current) {
+          /* iOS can fire a click at the swipe's end position — over whatever
+             block happens to be there; borrow the drag tombstone to eat it */
+          dragRef.current = { moved: true };
+          setTimeout(() => { if (dragRef.current && !dragRef.current.target) dragRef.current = null; }, 250);
+        }
         if (g.pts.size < 2 && g.pinching) {
           g.pinching = false;
           const el = gridBodyRef.current;
