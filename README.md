@@ -241,3 +241,15 @@ manual Fwd:); (3) text heuristics — attribution/header lines removed,
 future dates preferred over the email's own timestamps, time taken from
 near the chosen date. PDF attachments are not parsed (OCR territory); the
 .ics and auto-forward paths cover those senders better.
+
+## Push notifications
+Pushes fire an hour before and at the start of tasks/events. The client
+uploads its computed next-48h occurrence times (so repeat rules and
+timezones are handled by the same code that draws the calendar); a
+scheduled function (every 5 min) sends web pushes with dedup.
+
+Setup: `npx web-push generate-vapid-keys`, then set env vars
+VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT (mailto:you@example.com)
+and redeploy. iOS requires the PWA installed to the Home Screen (16.4+),
+and enabling from inside the installed app. The service worker (sw.js) does
+push only — deliberately no caching.

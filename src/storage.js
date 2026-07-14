@@ -32,6 +32,8 @@ export const openLogin = () => netlifyIdentity.open();
 export const closeLogin = () => netlifyIdentity.close();
 
 /* email-to-event suggestions */
+export async function getAuthHeader() { return bearer(); }
+
 export async function fetchEmailInbox(user) {
   if (!user) return null;
   const auth = await bearer();

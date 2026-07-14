@@ -5,3 +5,5 @@
    lets the header scroll away — the "two scrollbars" problem. */
 html, body, #root { height: 100%; margin: 0; overflow: hidden; overscroll-behavior: none; }
 .app-h { height: 100vh; height: 100dvh; height: var(--app-h, 100dvh); }
+html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+body { position: fixed; inset: 0; width: 100%; }

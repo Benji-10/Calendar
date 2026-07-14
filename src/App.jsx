@@ -8,7 +8,7 @@ import {
 } from "./time.js";
 import { expandOccurrences, scheduleTasks, windowFor, layoutDay, effectivePriority } from "./scheduler.js";
 import { parseICS } from "./ics.js";
-import { initIdentity, openLogin, doLogout, loadData, saveData, fetchEmailInbox, actOnSuggestion, STORE_KEY } from "./storage.js";
+import { initIdentity, openLogin, doLogout, loadData, saveData, fetchEmailInbox, actOnSuggestion, getAuthHeader, STORE_KEY } from "./storage.js";
 import { HOLIDAY_CALENDARS, calByCode, guessCountry, holidayFeedUrl } from "./holidays.js";
 
 const HOUR_H_BASE = 48;
@@ -33,6 +33,7 @@ const ICONS = {
   umbrella: <><path d="M12 3a8.5 8.5 0 0 1 8.5 8.5H3.5A8.5 8.5 0 0 1 12 3z" /><path d="M12 11.5V18a2 2 0 0 0 4 0" /></>,
   chevL: <path d="M14.5 5.5L8 12l6.5 6.5" />,
   mail: <><rect x="3" y="5.5" width="18" height="13" rx="2.5" /><path d="M3.5 7l8.5 6 8.5-6" /></>,
+  gear: <><circle cx="12" cy="12" r="3.2" /><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" /></>,
 };
 function Icon({ name, size = 16, color = "currentColor", sw = 1.8, style }) {
   return (
@@ -774,7 +775,7 @@ function EventBlock({ occ, lay, hourH, dragPreview, beginDrag, openEvent, openMa
   );
 }
 
-function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleTask }) {
+function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleTask, editing }) {
   const T = useT();
   const t = item.task;
   if (!item.done && dragPreview && dragPreview.key === "task_" + t.id) return null;
@@ -790,7 +791,7 @@ function TaskBlock({ item, lay, hourH, dragPreview, beginDrag, openTask, toggleT
     <div className={`absolute rounded-lg select-none group/tk ${done ? "" : "cursor-grab active:cursor-grabbing"}`}
       onPointerDown={(e) => { if (!done) beginDrag(e, { type: "task", item }, "move"); }}
       onClick={(e) => { e.stopPropagation(); openTask(t); }}
-      style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, zIndex: lay ? lay.z : 2, opacity: done ? 0.6 : 1, touchAction: done ? "auto" : "none" }}
+      style={{ ...geomStyle(g), background: c.bg, borderLeft: `3px dashed ${overdue ? T.danger : c.border}`, ...(editing ? { boxShadow: `0 0 0 2px ${c.border}` } : {}), zIndex: editing ? 30 : lay ? lay.z : 2, opacity: done ? 0.6 : 1, touchAction: done ? "auto" : "none" }}
       title={done ? "Completed" : item.pinned ? "Pinned time — drag to move" : "Auto-scheduled — drag to pin a time"}>
       <div className="px-1.5 py-0.5 pointer-events-none">
         <div className={`text-xs font-semibold break-words ${done ? "line-through" : ""}`} style={{ color: c.text, lineHeight: compact ? "1.1" : "1.25", display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: clampLines, overflow: "hidden" }}>
@@ -940,7 +941,7 @@ function TimeGrid({ days, now, nowMin, hourH, isMobile, allDayByDay, timedByDay,
                   <EventBlock key={occ.renderKey} occ={occ} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openEvent={openEvent} openMaps={openMaps} editing={editBlockId === occ.ev.id} />
                 ))}
                 {laid.tasks.map(({ item, lay }) => (
-                  <TaskBlock key={"task_" + item.task.id + (item.done ? "_done" : "")} item={item} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openTask={openTask} toggleTask={toggleTask} />
+                  <TaskBlock key={"task_" + item.task.id + (item.done ? "_done" : "")} item={item} lay={lay} hourH={hourH} dragPreview={dragPreview} beginDrag={beginDrag} openTask={openTask} toggleTask={toggleTask} editing={editBlockId === item.task.id} />
                 ))}
                 {dragPreview && dragPreview.dispDate === key && <GhostBlock preview={dragPreview} hourH={hourH} />}
                 {createPreview && createPreview.date === key && (
@@ -1451,6 +1452,10 @@ export default function Planner() {
   const [emailErr, setEmailErr] = useState("");
   const [defaultCat, setDefaultCat] = useState("work");
   const [editBlockId, setEditBlockId] = useState(null); /* mobile: block in resize-handle mode */
+  const [showSettings, setShowSettings] = useState(false);
+  const [notifState, setNotifState] = useState("checking"); /* unsupported|off|on|denied|error:<msg> */
+  const editBlockIdRef = useRef(null);
+  editBlockIdRef.current = editBlockId;
   const [confirmSug, setConfirmSug] = useState(null);
   const [quickTitle, setQuickTitle] = useState("");
   const [newWait, setNewWait] = useState("");
@@ -1477,17 +1482,26 @@ export default function Planner() {
     const set = () => {
       const h = window.visualViewport ? Math.round(window.visualViewport.height) : window.innerHeight;
       document.documentElement.style.setProperty("--app-h", `${h}px`);
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0); /* standalone iOS sometimes leaves the document nudged — that IS the black bar */
     };
     set();
+    window.addEventListener("focusout", set);
     window.visualViewport?.addEventListener("resize", set);
     window.addEventListener("resize", set);
     window.addEventListener("orientationchange", set);
     return () => {
+      window.removeEventListener("focusout", set);
       window.visualViewport?.removeEventListener("resize", set);
       window.removeEventListener("resize", set);
       window.removeEventListener("orientationchange", set);
     };
   }, []);
+
+  /* keep the document background in-theme so nothing black can peek through */
+  useEffect(() => {
+    document.documentElement.style.background = T.bg;
+    document.body.style.background = T.bg;
+  }, [T.bg]);
   const lastPushRef = useRef(0);
   const dataRef = useRef(null);
   const editSeqRef = useRef(0); /* bumped on every local edit; stale pulls compare against it */
@@ -1662,6 +1676,56 @@ export default function Planner() {
       window.removeEventListener("online", onWake);
     };
   }, [user, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ---------- push notifications ---------- */
+  const notifSupported = typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  useEffect(() => {
+    if (!notifSupported) { setNotifState("unsupported"); return; }
+    (async () => {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+        const sub = reg && (await reg.pushManager.getSubscription());
+        setNotifState(sub && Notification.permission === "granted" ? "on" : Notification.permission === "denied" ? "denied" : "off");
+      } catch { setNotifState("off"); }
+    })();
+  }, [notifSupported]);
+
+  const enableNotifs = async () => {
+    try {
+      setNotifState("checking");
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { setNotifState(perm === "denied" ? "denied" : "off"); return; }
+      const kr = await fetch("/.netlify/functions/notify");
+      const kj = await kr.json();
+      if (!kj.publicKey) { setNotifState("error:server VAPID keys not configured — see README"); return; }
+      const b64 = kj.publicKey.replace(/-/g, "+").replace(/_/g, "/");
+      const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+      const key = Uint8Array.from(atob(b64 + pad), (c) => c.charCodeAt(0));
+      const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      const auth = await getAuthHeader();
+      if (!auth) { setNotifState("error:sign in first — notifications need an account"); return; }
+      const r = await fetch("/.netlify/functions/notify", {
+        method: "POST",
+        headers: { Authorization: auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ sub: sub.toJSON() }),
+      });
+      if (!r.ok) throw new Error(`save failed (${r.status})`);
+      setNotifState("on");
+    } catch (err) { setNotifState(`error:${String(err?.message || err)}`); }
+  };
+  const disableNotifs = async () => {
+    try {
+      const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+      const sub = reg && (await reg.pushManager.getSubscription());
+      if (sub) {
+        const auth = await getAuthHeader();
+        if (auth) fetch("/.netlify/functions/notify", { method: "DELETE", headers: { Authorization: auth, "Content-Type": "application/json" }, body: JSON.stringify({ endpoint: sub.endpoint }) }).catch(() => {});
+        await sub.unsubscribe();
+      }
+      setNotifState("off");
+    } catch { setNotifState("off"); }
+  };
 
   /* email suggestions: light poll — load, focus, every 5 minutes */
   useEffect(() => {
@@ -1880,6 +1944,40 @@ export default function Planner() {
   }, [visibleEvents, range, icsEvents, suggestionEvents]);
   const schedule = useMemo(() => scheduleTasks(tasks, events, categories, now, deviceTz, waiting), [tasks, events, categories, now, waiting]);
 
+  /* upload the next-48h occurrence times whenever they change — this device's
+     scheduler (repeat rules, timezones) does the thinking; the cron just fires */
+  useEffect(() => {
+    if (!user || notifState !== "on" || !loaded) return;
+    const t = setTimeout(async () => {
+      try {
+        const now = Date.now();
+        const items = [];
+        for (const o of occurrences) {
+          if (o.allDay || o.dispStart == null || o.ev.suggestion || o.ev.holiday || o.ev.timeOff) continue;
+          const at = wallToUtc(o.dispDate, o.dispStart, deviceTz);
+          if (at > now - 5 * 60e3 && at < now + 48 * 3600e3) items.push({ key: o.renderKey, title: o.ev.title, startUtcMs: at });
+        }
+        for (const tk of tasks) {
+          if (tk.done) continue;
+          const slot = schedule[tk.id];
+          if (!slot) continue;
+          const at = wallToUtc(slot.date, slot.start, deviceTz);
+          if (at > now - 5 * 60e3 && at < now + 48 * 3600e3) items.push({ key: `task_${tk.id}_${slot.date}`, title: tk.title, startUtcMs: at });
+        }
+        const auth = await getAuthHeader();
+        if (!auth) return;
+        await fetch("/.netlify/functions/notify", {
+          method: "POST",
+          headers: { Authorization: auth, "Content-Type": "application/json" },
+          body: JSON.stringify({ schedule: items }),
+        });
+      } catch { /* next change retries */ }
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [user, notifState, loaded, occurrences, schedule, tasks]);
+
+
+
   const timedByDay = useMemo(() => {
     const m = {};
     for (const o of occurrences) if (!o.allDay) (m[o.dispDate] ||= []).push(o);
@@ -2069,11 +2167,15 @@ export default function Planner() {
     const meta = target.type === "event"
       ? { title: target.occ.ev.title, colorName: target.occ.ev.color, dashed: false }
       : { title: target.item.task.title, colorName: PRIORITY[target.item.task.priority]?.c || "blue", dashed: true };
-    const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch || mode !== "move", moved: false, dayDelta: 0, minDelta: 0, timer: null };
-    if (isTouch && mode === "move") st.timer = setTimeout(() => {
-      st.active = true;
-      if (target.type === "event") setEditBlockId(target.occ.ev.id); /* handles appear; drag continues as before */
+    const targetId = target.type === "event" ? target.occ.ev.id : target.item.task.id;
+    const editingThis = editBlockIdRef.current === targetId;
+    /* mobile: blocks never move from a plain press — long-press enters edit
+       mode (ring + handles); only then do press-and-drag / handle-drags act */
+    const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch || mode !== "move" || editingThis, moved: false, dayDelta: 0, minDelta: 0, timer: null };
+    if (isTouch && mode === "move" && !editingThis) st.timer = setTimeout(() => {
+      setEditBlockId(targetId);
       if (navigator.vibrate) navigator.vibrate(15);
+      cleanup(); /* the press only armed edit mode — no drag from it */
     }, 400);
     dragRef.current = st;
 
@@ -2468,7 +2570,11 @@ export default function Planner() {
     : `${anchor.getFullYear()}`;
 
   const pendingTasks = tasks.filter((t) => !t.done).sort((a, b) => a.priority - b.priority || a.createdAt - b.createdAt);
-  const doneTasks = tasks.filter((t) => t.done).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+  const [showAllDone, setShowAllDone] = useState(false);
+  const weekAgo = Date.now() - 7 * 86400e3;
+  const doneAll = tasks.filter((t) => t.done).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0));
+  const doneTasks = showAllDone ? doneAll : doneAll.filter((t) => (t.completedAt || 0) > weekAgo);
+  const olderDone = doneAll.length - doneAll.filter((t) => (t.completedAt || 0) > weekAgo).length;
   const catName = (id) => categories.find((c) => c.id === id)?.name || "—";
 
   if (!loaded) {
@@ -2588,7 +2694,14 @@ export default function Planner() {
 
             {doneTasks.length > 0 && (
               <>
-                <div className="text-[10px] uppercase tracking-wide px-2 mt-3 mb-1" style={{ color: T.dim }}>Completed</div>
+                <div className="flex items-center px-2 mt-3 mb-1">
+                  <span className="text-[10px] uppercase tracking-wide flex-1" style={{ color: T.dim }}>Completed{showAllDone ? "" : " · 7 days"}</span>
+                  {olderDone > 0 && (
+                    <button onClick={() => setShowAllDone((v) => !v)} className="text-[10px]" style={{ color: T.accent }}>
+                      {showAllDone ? "recent only" : `show ${olderDone} older`}
+                    </button>
+                  )}
+                </div>
                 {doneTasks.slice(0, 20).map((t) => (
                   <div key={t.id} className="group flex items-center gap-2 px-2 py-1.5 rounded-lg rl-hover">
                     <Check checked onToggle={() => toggleTask(t.id)} color={T.ok} />
@@ -2603,6 +2716,7 @@ export default function Planner() {
           <div className="px-3 py-3 border-t flex flex-col gap-1.5" style={{ borderColor: T.border }}>
             <SettingsRow icon={<Icon name="sliders" size={15} />} label="Hours & categories" onClick={() => setShowCats(true)} />
             <SettingsRow icon={<Icon name="flag" size={15} />} label="Calendars" right="›" onClick={() => setShowHolidays(true)} />
+            <SettingsRow icon={<Icon name="gear" size={15} />} label="Settings" right="›" onClick={() => setShowSettings(true)} />
             {isMobile && <SettingsRow icon={<Icon name={mode === "dark" ? "sun" : "moon"} size={15} />} label={mode === "dark" ? "Light mode" : "Dark mode"} onClick={() => setMode(mode === "dark" ? "light" : "dark")} />}
             {user && (
               <SettingsRow icon={<Icon name="mail" size={15} />} label="Email import" right={emailInbox?.unconfigured ? "setup" : "›"} onClick={() => setShowEmail(true)} />
@@ -2693,6 +2807,37 @@ export default function Planner() {
               }
             }}
             onToggleTask={toggleTask} onToggleEvCheck={toggleEvCheck} onToggleTaskCheck={toggleTaskCheck} openMaps={openMaps} />
+        )}
+        {showSettings && (
+          <Modal title="Settings" onClose={() => setShowSettings(false)}>
+            <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: T.dim }}>Tasks</div>
+            <label className="flex items-center justify-between gap-2 text-sm mb-4" style={{ color: T.text }}>
+              Default category for new tasks
+              <select value={categories.some((c) => c.id === defaultCat) ? defaultCat : categories[0]?.id}
+                onChange={(e) => setDefaultCat(e.target.value)}
+                className="rounded-lg px-2 py-1.5 text-sm" style={{ background: T.surface2, color: T.text, border: "none" }}>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </label>
+            <div className="text-[10px] uppercase tracking-wide mb-1.5" style={{ color: T.dim }}>Notifications</div>
+            {notifState === "unsupported" ? (
+              <p className="text-xs" style={{ color: T.dim }}>This browser doesn't support push notifications. On iPhone, add Rollover to your Home Screen (iOS 16.4+) and enable from inside the installed app.</p>
+            ) : notifState === "denied" ? (
+              <p className="text-xs" style={{ color: T.dim }}>Notifications are blocked for this site — re-allow them in your browser/system settings, then try again.</p>
+            ) : notifState.startsWith("error:") ? (
+              <p className="text-xs" style={{ color: T.danger }}>{notifState.slice(6)}</p>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs flex-1" style={{ color: T.dim }}>
+                  {notifState === "on" ? "On — you'll get a push an hour before and when things start." : "Get a push an hour before and when tasks or events start."}
+                </p>
+                {notifState === "on"
+                  ? <button onClick={disableNotifs} className="rounded-lg px-3 py-1.5 text-xs font-medium" style={{ background: T.surface2, color: T.dim }}>Turn off</button>
+                  : <button onClick={enableNotifs} disabled={notifState === "checking"} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white" style={{ background: T.accent }}>{notifState === "checking" ? "…" : "Enable"}</button>}
+              </div>
+            )}
+            {!user && notifState !== "unsupported" && <p className="text-[10px] mt-1.5" style={{ color: T.faint }}>Notifications need a signed-in account (the server sends them).</p>}
+          </Modal>
         )}
         {confirmSug && (() => {
           const p = confirmSug.payload;
