@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext } from "react";
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback, useContext, createContext } from "react";
 import tzlookup from "tz-lookup";
 import {
   toAmPm, MONTHS, DOW, deviceTz,
@@ -401,7 +401,7 @@ function ItemModal({ draft, events, tasks = [], waiting = [], userCals = [], cat
         )}
 
         <div className="relative">
-          <input autoFocus value={title}
+          <input autoFocus={!window.matchMedia("(pointer: coarse)").matches} value={title}
             onChange={(e) => { setTitle(e.target.value); setShowSuggest(true); }}
             onFocus={() => setShowSuggest(true)} onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
             placeholder="Title" className="w-full rounded-lg px-3 py-2 text-sm" style={inputStyle(T)} />
@@ -618,6 +618,48 @@ function ItemModal({ draft, events, tasks = [], waiting = [], userCals = [], cat
 }
 
 /* ---------- categories / hours editor ---------- */
+function NotifDiagnostics() {
+  const T = useT();
+  const [st, setSt] = useState(null);
+  const [test, setTest] = useState("");
+  useEffect(() => {
+    (async () => {
+      try {
+        const auth = await getAuthHeader();
+        if (!auth) return;
+        const r = await fetch("/.netlify/functions/notify?status=1", { headers: { Authorization: auth } });
+        setSt(await r.json());
+      } catch { setSt({ error: true }); }
+    })();
+  }, []);
+  const sendTest = async () => {
+    setTest("sending…");
+    try {
+      const auth = await getAuthHeader();
+      const r = await fetch("/.netlify/functions/notify", { method: "POST", headers: { Authorization: auth, "Content-Type": "application/json" }, body: JSON.stringify({ test: 1 }) });
+      const j = await r.json();
+      setTest(j.ok ? `sent to ${j.sent} device${j.sent === 1 ? "" : "s"} — should arrive in seconds` : j.error || (j.errors || []).join(", ") || "failed");
+    } catch (err) { setTest(String(err?.message || err)); }
+  };
+  const age = st?.scheduleUpdated ? Math.round((Date.now() - new Date(st.scheduleUpdated).getTime()) / 60000) : null;
+  return (
+    <div className="mt-2 rounded-xl px-3 py-2" style={{ background: T.surface2 }}>
+      {st ? st.error ? <p className="text-[11px]" style={{ color: T.danger }}>couldn't reach the notify function</p> : (
+        <>
+          {!st.vapidComplete && <p className="text-[11px] mb-1" style={{ color: T.danger }}>Server is missing VAPID_PRIVATE_KEY or VAPID_SUBJECT — scheduled sends are skipped until set.</p>}
+          <p className="text-[11px]" style={{ color: T.dim }}>
+            {st.devices} device{st.devices === 1 ? "" : "s"} subscribed · {st.scheduled} item{st.scheduled === 1 ? "" : "s"} scheduled{age != null ? ` · updated ${age}m ago` : " · nothing uploaded yet"}
+          </p>
+        </>
+      ) : <p className="text-[11px]" style={{ color: T.dim }}>checking…</p>}
+      <div className="flex items-center gap-2 mt-1.5">
+        <button onClick={sendTest} className="rounded-lg px-2.5 py-1 text-[11px] font-medium" style={{ background: T.surface, color: T.accent }}>Send test notification</button>
+        {test && <span className="text-[10px]" style={{ color: T.dim }}>{test}</span>}
+      </div>
+    </div>
+  );
+}
+
 function CategoriesModal({ categories, defaultCat, onSave, onClose }) {
   const T = useT();
   const [cats, setCats] = useState(() => JSON.parse(JSON.stringify(categories)));
@@ -1220,11 +1262,10 @@ function DetailPanel({ detail, closing, tasks, events, categories, schedule, wai
   const t = isTask ? tasks.find((x) => x.id === detail.id) : null;
   const ev = !isTask ? (events.find((x) => x.id === detail.id) || detail.snap || null) : null;
   const item = t || ev;
-  useEffect(() => { if (!item) onBack(); }, [item, onBack]);
-  if (!item) return null;
-
   const panelRef = useRef(null);
   const edgeRef = useRef(null);
+  useEffect(() => { if (!item) onBack(); }, [item, onBack]);
+  if (!item) return null;
 
   /* live times for simple events: derive from the event itself (converted
      from its stored tz to this device) — captured detail times only cover
@@ -1420,7 +1461,23 @@ function YearGrid({ anchor, now, onPickMonth }) {
 }
 
 /* ==================================================================== */
-export default function Planner() {
+class ErrorBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return (
+      <div className="app-h flex flex-col items-center justify-center gap-3 p-6" style={{ background: "#000", color: "#eee", fontFamily: "-apple-system, sans-serif" }}>
+        <div className="text-sm font-semibold">Something broke.</div>
+        <div className="text-xs opacity-70 text-center break-all">{String(this.state.err?.message || this.state.err)}</div>
+        <button onClick={() => location.reload()} className="rounded-xl px-4 py-2 text-sm font-semibold" style={{ background: "#333", color: "#fff" }}>Reload</button>
+        <div className="text-[10px] opacity-50">Your data is safe in the local mirror and on the server.</div>
+      </div>
+    );
+  }
+}
+
+function Planner() {
   const [mode, setMode] = useState(() => { try { return localStorage.getItem("rollover-theme") || "dark"; } catch { return "dark"; } });
   const T = THEMES[mode];
   useEffect(() => { try { localStorage.setItem("rollover-theme", mode); } catch { /* private mode */ } }, [mode]);
@@ -1457,6 +1514,8 @@ export default function Planner() {
   const [defaultCat, setDefaultCat] = useState("work");
   const [editBlockId, setEditBlockId] = useState(null); /* mobile: block in resize-handle mode */
   const [showSettings, setShowSettings] = useState(false);
+  const [ctxMenu, setCtxMenu] = useState(null); /* long-press menu: {type:'event'|'task'|'paste', ...} */
+  const clipRef = useRef(null); /* app-internal clipboard for cut/copy/paste */
   const [notifState, setNotifState] = useState("checking"); /* unsupported|off|on|denied|error:<msg> */
   const editBlockIdRef = useRef(null);
   editBlockIdRef.current = editBlockId;
@@ -1680,6 +1739,38 @@ export default function Planner() {
       window.removeEventListener("online", onWake);
     };
   }, [user, loaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ctxAction = (act) => {
+    const m = ctxMenu;
+    setCtxMenu(null);
+    if (!m) return;
+    if (m.type === "paste") {
+      const c = clipRef.current;
+      if (!c) return;
+      if (c.type === "event") {
+        const d = c.data;
+        const dur = d.allDay ? 0 : Math.max(15, (d.end - d.start) || 60);
+        setEvents((es) => [...es, { ...d, id: uid(), srcSugId: undefined, date: m.date, endDate: null,
+          start: d.allDay ? 0 : m.minute, end: d.allDay ? 1440 : Math.min(1440, m.minute + dur) }]);
+      } else {
+        setTasks((ts) => [...ts, { ...c.data, id: uid(), done: false, completedAt: null, createdAt: Date.now(), scheduledAt: { date: m.date, start: m.minute } }]);
+      }
+      return;
+    }
+    if (m.type === "event") {
+      const ev = events.find((e) => e.id === m.id);
+      if (!ev) return;
+      if (act === "copy" || act === "cut") clipRef.current = { type: "event", data: { ...ev } };
+      if (act === "cut" || act === "delete") { setEvents((es) => es.filter((e) => e.id !== m.id)); setEditBlockId(null); }
+      if (act === "duplicate") setEvents((es) => [...es, { ...ev, id: uid(), srcSugId: undefined }]);
+    } else {
+      const t = tasks.find((x) => x.id === m.id);
+      if (!t) return;
+      if (act === "copy" || act === "cut") clipRef.current = { type: "task", data: { ...t } };
+      if (act === "cut" || act === "delete") { setTasks((ts) => ts.filter((x) => x.id !== m.id)); setEditBlockId(null); }
+      if (act === "duplicate") setTasks((ts) => [...ts, { ...t, id: uid(), done: false, completedAt: null, createdAt: Date.now(), scheduledAt: null }]);
+    }
+  };
 
   /* ---------- push notifications ---------- */
   const notifSupported = typeof window !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
@@ -2076,6 +2167,7 @@ export default function Planner() {
   const openEvent = useCallback((occ) => {
     if (dragRef.current?.moved) return;
     setEditBlockId(null);
+    setCtxMenu(null);
     if (occ.ev.suggestion) {
       const row = pendingSuggestions.find((r) => r.id === occ.ev.sugId);
       if (row) setConfirmSug(row);
@@ -2178,6 +2270,7 @@ export default function Planner() {
     const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch || mode !== "move" || editingThis, moved: false, dayDelta: 0, minDelta: 0, timer: null };
     if (isTouch && mode === "move" && !editingThis) st.timer = setTimeout(() => {
       setEditBlockId(targetId);
+      setCtxMenu({ type: target.type, id: targetId, x: st.x0, y: st.y0 });
       if (navigator.vibrate) navigator.vibrate(15);
       st.editArmed = true; /* rest of this gesture is consumed: no drag, and no click on release */
     }, 400);
@@ -2302,6 +2395,13 @@ export default function Planner() {
          it anywhere — holding at the left/right edge rolls to other days */
       st.timer = setTimeout(() => {
         if (dragRef.current !== st) return; /* gesture was cancelled (e.g. a pinch started) */
+        if (clipRef.current) {
+          /* something on the clipboard: offer paste-here instead of create */
+          setCtxMenu({ type: "paste", x: st.lx, y: st.ly, date: key, minute: yToMin(st.ly) });
+          if (navigator.vibrate) navigator.vibrate(15);
+          st.moved = true; /* the release's click is spent — cleanup keeps .moved visible for it */
+          return;
+        }
         st.active = true;
         st.floating = true;
         if (navigator.vibrate) navigator.vibrate(15);
@@ -2521,6 +2621,7 @@ export default function Planner() {
     } else if (g.pts.size === 1) {
       g.swipeX0 = e.clientX; g.swipeY0 = e.clientY; g.swipeAxis = null;
       setEditBlockId(null); /* tapping the grid dismisses resize handles */
+      setCtxMenu(null);
     }
   }, [stepDay, clearTouchBlock, resetGesture]);
 
@@ -2848,8 +2949,27 @@ export default function Planner() {
                   : <button onClick={enableNotifs} disabled={notifState === "checking"} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-white" style={{ background: T.accent }}>{notifState === "checking" ? "…" : "Enable"}</button>}
               </div>
             )}
+            {notifState === "on" && <NotifDiagnostics />}
             {!user && notifState !== "unsupported" && <p className="text-[10px] mt-1.5" style={{ color: T.faint }}>Notifications need a signed-in account (the server sends them).</p>}
           </Modal>
+        )}
+        {ctxMenu && (
+          <div className="fixed z-[65] flex items-center gap-0.5 rounded-2xl px-1 py-1"
+            style={{ left: Math.max(8, Math.min(window.innerWidth - 232, ctxMenu.x - 110)), top: Math.max(8, ctxMenu.y - 64), background: T.surface, boxShadow: T.shadow, border: `1px solid ${T.border}` }}>
+            {ctxMenu.type === "paste" ? (
+              <>
+                <button onClick={() => ctxAction("paste")} className="px-3 py-1.5 rounded-xl text-sm font-semibold" style={{ color: T.accent }}>Paste</button>
+                <button onClick={() => { const m = ctxMenu; setCtxMenu(null); setItemDraft({ itemType: "event", date: m.date, start: m.minute, end: Math.min(1440, m.minute + 60) }); }} className="px-3 py-1.5 rounded-xl text-sm" style={{ color: T.text }}>New event</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => ctxAction("cut")} className="px-2.5 py-1.5 rounded-xl text-sm" style={{ color: T.text }}>Cut</button>
+                <button onClick={() => ctxAction("copy")} className="px-2.5 py-1.5 rounded-xl text-sm" style={{ color: T.text }}>Copy</button>
+                <button onClick={() => ctxAction("duplicate")} className="px-2.5 py-1.5 rounded-xl text-sm" style={{ color: T.text }}>Duplicate</button>
+                <button onClick={() => ctxAction("delete")} className="px-2.5 py-1.5 rounded-xl text-sm font-semibold" style={{ color: T.danger }}>Delete</button>
+              </>
+            )}
+          </div>
         )}
         {confirmSug && (() => {
           const p = confirmSug.payload;
@@ -2905,4 +3025,8 @@ export default function Planner() {
       </div>
     </ThemeCtx.Provider>
   );
+}
+
+export default function App() {
+  return <ErrorBoundary><Planner /></ErrorBoundary>;
 }
