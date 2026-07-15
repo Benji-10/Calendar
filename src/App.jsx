@@ -1515,6 +1515,7 @@ function Planner() {
   const [editBlockId, setEditBlockId] = useState(null); /* mobile: block in resize-handle mode */
   const [showSettings, setShowSettings] = useState(false);
   const [ctxMenu, setCtxMenu] = useState(null); /* long-press menu: {type:'event'|'task'|'paste', ...} */
+  const [confirmDel, setConfirmDel] = useState(null); /* {type, id, title} */
   const clipRef = useRef(null); /* app-internal clipboard for cut/copy/paste */
   const [notifState, setNotifState] = useState("checking"); /* unsupported|off|on|denied|error:<msg> */
   const editBlockIdRef = useRef(null);
@@ -1761,13 +1762,15 @@ function Planner() {
       const ev = events.find((e) => e.id === m.id);
       if (!ev) return;
       if (act === "copy" || act === "cut") clipRef.current = { type: "event", data: { ...ev } };
-      if (act === "cut" || act === "delete") { setEvents((es) => es.filter((e) => e.id !== m.id)); setEditBlockId(null); }
+      if (act === "cut") { setEvents((es) => es.filter((e) => e.id !== m.id)); setEditBlockId(null); }
+      if (act === "delete") { setConfirmDel({ type: "event", id: m.id, title: ev.title }); return; }
       if (act === "duplicate") setEvents((es) => [...es, { ...ev, id: uid(), srcSugId: undefined }]);
     } else {
       const t = tasks.find((x) => x.id === m.id);
       if (!t) return;
       if (act === "copy" || act === "cut") clipRef.current = { type: "task", data: { ...t } };
-      if (act === "cut" || act === "delete") { setTasks((ts) => ts.filter((x) => x.id !== m.id)); setEditBlockId(null); }
+      if (act === "cut") { setTasks((ts) => ts.filter((x) => x.id !== m.id)); setEditBlockId(null); }
+      if (act === "delete") { setConfirmDel({ type: "task", id: m.id, title: t.title }); return; }
       if (act === "duplicate") setTasks((ts) => [...ts, { ...t, id: uid(), done: false, completedAt: null, createdAt: Date.now(), scheduledAt: null }]);
     }
   };
@@ -1797,6 +1800,14 @@ function Planner() {
       const b64 = kj.publicKey.replace(/-/g, "+").replace(/_/g, "/");
       const pad = "=".repeat((4 - (b64.length % 4)) % 4);
       const key = Uint8Array.from(atob(b64 + pad), (c) => c.charCodeAt(0));
+      /* a subscription made under an old/different key pair makes every send
+         403 — detect and re-subscribe rather than reusing it */
+      const existing = await reg.pushManager.getSubscription();
+      if (existing) {
+        const cur = existing.options?.applicationServerKey ? new Uint8Array(existing.options.applicationServerKey) : null;
+        const same = cur && cur.length === key.length && cur.every((b, i) => b === key[i]);
+        if (!same) await existing.unsubscribe();
+      }
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
       const auth = await getAuthHeader();
       if (!auth) { setNotifState("error:sign in first — notifications need an account"); return; }
@@ -2264,13 +2275,14 @@ function Planner() {
       ? { title: target.occ.ev.title, colorName: target.occ.ev.color, dashed: false }
       : { title: target.item.task.title, colorName: PRIORITY[target.item.task.priority]?.c || "blue", dashed: true };
     const targetId = target.type === "event" ? target.occ.ev.id : target.item.task.id;
+    const srcRect = e.currentTarget && e.currentTarget.getBoundingClientRect ? e.currentTarget.getBoundingClientRect() : null;
     const editingThis = editBlockIdRef.current === targetId;
     /* mobile: blocks never move from a plain press — long-press enters edit
        mode (ring + handles); only then do press-and-drag / handle-drags act */
     const st = { target, mode, disp, meta, x0: e.clientX, y0: e.clientY, active: !isTouch || mode !== "move" || editingThis, moved: false, dayDelta: 0, minDelta: 0, timer: null };
     if (isTouch && mode === "move" && !editingThis) st.timer = setTimeout(() => {
       setEditBlockId(targetId);
-      setCtxMenu({ type: target.type, id: targetId, x: st.x0, y: st.y0 });
+      setCtxMenu({ type: target.type, id: targetId, x: st.x0, y: st.y0, rect: srcRect ? { top: srcRect.top, bottom: srcRect.bottom, cx: srcRect.left + srcRect.width / 2 } : null });
       if (navigator.vibrate) navigator.vibrate(15);
       st.editArmed = true; /* rest of this gesture is consumed: no drag, and no click on release */
     }, 400);
@@ -2953,9 +2965,35 @@ function Planner() {
             {!user && notifState !== "unsupported" && <p className="text-[10px] mt-1.5" style={{ color: T.faint }}>Notifications need a signed-in account (the server sends them).</p>}
           </Modal>
         )}
+        {confirmDel && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-6" style={{ background: "rgba(0,0,0,.45)" }} onClick={() => setConfirmDel(null)}>
+            <div className="rounded-2xl p-4 w-full max-w-xs" style={{ background: T.surface, boxShadow: T.shadow }} onClick={(e) => e.stopPropagation()}>
+              <div className="text-sm font-bold mb-1" style={{ color: T.text }}>Delete "{confirmDel.title}"?</div>
+              <p className="text-[11px] mb-3" style={{ color: T.dim }}>{confirmDel.type === "event" ? "This removes the event from your calendar." : "This removes the task."}</p>
+              <div className="flex gap-2">
+                <button className="flex-1 rounded-xl py-2 text-sm font-medium" style={{ background: T.surface2, color: T.dim }} onClick={() => setConfirmDel(null)}>Cancel</button>
+                <button className="flex-1 rounded-xl py-2 text-sm font-semibold text-white" style={{ background: T.danger }}
+                  onClick={() => {
+                    if (confirmDel.type === "event") setEvents((es) => es.filter((e) => e.id !== confirmDel.id));
+                    else setTasks((ts) => ts.filter((x) => x.id !== confirmDel.id));
+                    setEditBlockId(null);
+                    setConfirmDel(null);
+                  }}>Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
         {ctxMenu && (
           <div className="fixed z-[65] flex items-center gap-0.5 rounded-2xl px-1 py-1"
-            style={{ left: Math.max(8, Math.min(window.innerWidth - 232, ctxMenu.x - 110)), top: Math.max(8, ctxMenu.y - 64), background: T.surface, boxShadow: T.shadow, border: `1px solid ${T.border}` }}>
+            style={(() => {
+              const W = 236, H = 42;
+              const cx = ctxMenu.rect ? ctxMenu.rect.cx : ctxMenu.x;
+              const left = Math.max(8, Math.min(window.innerWidth - W - 8, cx - W / 2));
+              /* above the block so nothing is obstructed; below when cramped */
+              const above = (ctxMenu.rect ? ctxMenu.rect.top : ctxMenu.y) - H - 10;
+              const top = above >= 8 ? above : (ctxMenu.rect ? ctxMenu.rect.bottom : ctxMenu.y) + 10;
+              return { left, top, background: T.surface, boxShadow: T.shadow, border: `1px solid ${T.border}` };
+            })()}>
             {ctxMenu.type === "paste" ? (
               <>
                 <button onClick={() => ctxAction("paste")} className="px-3 py-1.5 rounded-xl text-sm font-semibold" style={{ color: T.accent }}>Paste</button>

@@ -10,6 +10,17 @@
 const { neon } = require("@neondatabase/serverless");
 const webpush = require("web-push");
 
+function vapid() {
+  const pub = (process.env.VAPID_PUBLIC_KEY || "").trim();
+  const priv = (process.env.VAPID_PRIVATE_KEY || "").trim();
+  let subj = (process.env.VAPID_SUBJECT || "").trim();
+  /* Apple's push service returns 403 BadJwtToken for a bare email — the
+     spec requires a mailto: or https: subject */
+  if (subj && !/^(mailto:|https:)/i.test(subj)) subj = `mailto:${subj}`;
+  return { pub, priv, subj, complete: !!(pub && priv && subj) };
+}
+
+
 let ensured = null;
 async function ensureTables(sql) {
   if (!ensured) {
@@ -65,24 +76,25 @@ exports.handler = async (event, context) => {
       const subs = await sql`SELECT count(*)::int AS n FROM planner_push WHERE user_id = ${user.sub}`;
       const up = await sql`SELECT jsonb_array_length(data) AS n, updated_at FROM planner_upcoming WHERE user_id = ${user.sub}`;
       return json(200, {
-        vapidComplete: !!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT),
+        vapidComplete: vapid().complete,
         devices: subs[0] ? subs[0].n : 0,
         scheduled: up[0] ? up[0].n : 0,
         scheduleUpdated: up[0] ? up[0].updated_at : null,
       });
     }
     if (event.httpMethod === "POST" && body.test) {
-      if (!(process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY && process.env.VAPID_SUBJECT)) {
-        return json(200, { ok: false, error: "server missing VAPID_PRIVATE_KEY / VAPID_SUBJECT" });
-      }
-      webpush.setVapidDetails(process.env.VAPID_SUBJECT, process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+      const v = vapid();
+      if (!v.complete) return json(200, { ok: false, error: "server missing VAPID_PRIVATE_KEY / VAPID_SUBJECT" });
+      webpush.setVapidDetails(v.subj, v.pub, v.priv);
       const rows = await sql`SELECT endpoint, sub FROM planner_push WHERE user_id = ${user.sub}`;
       if (!rows.length) return json(200, { ok: false, error: "no subscribed devices" });
       let sent = 0; const errors = [];
       for (const r of rows) {
         try { await webpush.sendNotification(r.sub, JSON.stringify({ title: "Rollover", body: "Test notification — the push path works." })); sent++; }
         catch (err) {
-          errors.push(`${err.statusCode || err.message}`);
+          errors.push(err.statusCode === 403
+            ? "403 — push service rejected the VAPID signature. If VAPID_SUBJECT was just fixed, redeploy; if keys were regenerated after subscribing, toggle notifications off and on to resubscribe this device."
+            : `${err.statusCode || err.message}`);
           if (err.statusCode === 404 || err.statusCode === 410) await sql`DELETE FROM planner_push WHERE endpoint = ${r.endpoint}`;
         }
       }

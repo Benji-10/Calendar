@@ -6,11 +6,22 @@
 const { neon } = require("@neondatabase/serverless");
 const webpush = require("web-push");
 
+function vapid() {
+  const pub = (process.env.VAPID_PUBLIC_KEY || "").trim();
+  const priv = (process.env.VAPID_PRIVATE_KEY || "").trim();
+  let subj = (process.env.VAPID_SUBJECT || "").trim();
+  /* Apple's push service returns 403 BadJwtToken for a bare email — the
+     spec requires a mailto: or https: subject */
+  if (subj && !/^(mailto:|https:)/i.test(subj)) subj = `mailto:${subj}`;
+  return { pub, priv, subj, complete: !!(pub && priv && subj) };
+}
+
+
 exports.handler = async () => {
-  const need = ["DATABASE_URL", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"];
-  const missing = need.filter((k) => !process.env[k]);
-  if (missing.length) return { statusCode: 200, body: `skipped — missing ${missing.join(", ")}` };
-  webpush.setVapidDetails(process.env.VAPID_SUBJECT, process.env.VAPID_PUBLIC_KEY, process.env.VAPID_PRIVATE_KEY);
+  if (!process.env.DATABASE_URL) return { statusCode: 200, body: "skipped — missing DATABASE_URL" };
+  const v = vapid();
+  if (!v.complete) return { statusCode: 200, body: "skipped — incomplete VAPID env" };
+  webpush.setVapidDetails(v.subj, v.pub, v.priv);
   const sql = neon(process.env.DATABASE_URL);
 
   const now = Date.now();
