@@ -458,7 +458,12 @@ function ItemModal({ draft, events, tasks = [], waiting = [], userCals = [], cat
                 <option value="none">Never</option><option value="daily">Every day</option><option value="weekdays">Weekdays</option>
                 <option value="weekly">Every week</option><option value="monthly">Every month</option><option value="yearly">Every year</option>
               </select>
-              {repeat !== "none" && <input type="date" value={repeatUntil} onChange={(e) => setRepeatUntil(e.target.value)} title="Repeat until (optional)" className="rounded-md px-2 py-1 text-xs" style={selStyle(T)} />}
+              {repeat !== "none" && (
+                <label className="flex items-center gap-1 text-[10px]" style={{ color: T.dim }}>
+                  until
+                  <input type="date" value={repeatUntil} onChange={(e) => setRepeatUntil(e.target.value)} title="Last date the repeat runs (leave empty for forever)" className="rounded-md px-2 py-1 text-xs" style={selStyle(T)} />
+                </label>
+              )}
             </Row>
             {repeat !== "none" && !isNew && <p className="text-[10px] -mt-2" style={{ color: T.dim }}>Changes apply to every occurrence in the series.</p>}
             <Row label="Location">
@@ -707,6 +712,20 @@ function NotifDiagnostics() {
           <p className="text-[11px]" style={{ color: T.dim }}>
             {st.devices} device{st.devices === 1 ? "" : "s"} subscribed · {st.scheduled} item{st.scheduled === 1 ? "" : "s"} scheduled{age != null ? ` · updated ${age}m ago` : " · nothing uploaded yet"}
           </p>
+          {st.lastCron ? (
+            <p className="text-[11px]" style={{ color: T.dim }}>
+              scheduler last ran {Math.round((Date.now() - new Date(st.lastCron).getTime()) / 60000)}m ago · {st.sent24h} sent in 24h
+            </p>
+          ) : (
+            <p className="text-[11px]" style={{ color: T.danger }}>
+              scheduler has never run — check the deploy's Functions tab lists notify-cron as "Scheduled"
+            </p>
+          )}
+          {st.nextFires?.length > 0 && (
+            <p className="text-[10px] mt-0.5" style={{ color: T.faint }}>
+              next: {st.nextFires.slice(0, 3).map((f) => `${f.title} (${f.kind}) in ${f.inMin >= 60 ? `${Math.floor(f.inMin / 60)}h${f.inMin % 60 ? ` ${f.inMin % 60}m` : ""}` : `${f.inMin}m`}`).join(" · ")}
+            </p>
+          )}
         </>
       ) : <p className="text-[11px]" style={{ color: T.dim }}>checking…</p>}
       <div className="flex items-center gap-2 mt-1.5">

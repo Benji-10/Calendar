@@ -79,12 +79,25 @@ exports.handler = async (event, context) => {
     if (event.httpMethod === "GET") {
       /* ?status=1 — everything needed to see why pushes aren't arriving */
       const subs = await sql`SELECT count(*)::int AS n FROM planner_push WHERE user_id = ${user.sub}`;
-      const up = await sql`SELECT jsonb_array_length(data) AS n, updated_at FROM planner_upcoming WHERE user_id = ${user.sub}`;
+      const up = await sql`SELECT data, jsonb_array_length(data) AS n, updated_at FROM planner_upcoming WHERE user_id = ${user.sub}`;
+      const hb = await sql`SELECT sent_at FROM planner_notif_log WHERE key = 'cron_heartbeat'`;
+      const recent = await sql`SELECT count(*)::int AS n FROM planner_notif_log WHERE key LIKE ${user.sub + "\\_%"} AND sent_at > now() - interval '1 day'`;
+      const nowMs = Date.now();
+      const fires = [];
+      for (const item of (up[0] && up[0].data) || []) {
+        for (const f of [{ kind: "start", at: item.startUtcMs }, { kind: "1h before", at: item.startUtcMs - 3600e3 }]) {
+          if (f.at > nowMs) fires.push({ title: item.title, kind: f.kind, inMin: Math.round((f.at - nowMs) / 60000) });
+        }
+      }
+      fires.sort((a, b) => a.inMin - b.inMin);
       return json(200, {
         vapidComplete: vapid().complete,
         devices: subs[0] ? subs[0].n : 0,
         scheduled: up[0] ? up[0].n : 0,
         scheduleUpdated: up[0] ? up[0].updated_at : null,
+        lastCron: hb[0] ? hb[0].sent_at : null,
+        sent24h: recent[0] ? recent[0].n : 0,
+        nextFires: fires.slice(0, 5),
       });
     }
     if (event.httpMethod === "POST" && body.test) {

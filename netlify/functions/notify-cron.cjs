@@ -22,13 +22,20 @@ function vapid() {
 
 exports.handler = async () => {
   if (!process.env.DATABASE_URL) return { statusCode: 200, body: "skipped — missing DATABASE_URL" };
+  const sql = neon(process.env.DATABASE_URL);
+  /* heartbeat FIRST — the diagnostics panel uses it to answer "is the
+     scheduled function running at all?", including when VAPID is incomplete */
+  try {
+    await sql`INSERT INTO planner_notif_log (key) VALUES ('cron_heartbeat')
+              ON CONFLICT (key) DO UPDATE SET sent_at = now()`;
+  } catch { /* table appears on first notify call — heartbeat resumes then */ }
   const v = vapid();
   if (!v.complete) return { statusCode: 200, body: "skipped — incomplete VAPID env" };
   webpush.setVapidDetails(v.subj, v.pub, v.priv);
-  const sql = neon(process.env.DATABASE_URL);
 
   const now = Date.now();
-  const WINDOW = 5 * 60e3; /* matches the cron cadence */
+  const WINDOW = 5 * 60e3;  /* the cron cadence */
+  const CATCHUP = 10 * 60e3; /* a late or skipped run must not silently drop fires */
   const rows = await sql`
     SELECT u.user_id, u.data, p.endpoint, p.sub
     FROM planner_upcoming u JOIN planner_push p ON p.user_id = u.user_id
@@ -42,7 +49,9 @@ exports.handler = async () => {
         { kind: "lead", at: item.startUtcMs - 3600e3, body: "in 1 hour" },
       ];
       for (const f of fires) {
-        if (f.at < now || f.at >= now + WINDOW) continue;
+        /* due = inside the upcoming window, or recently missed (dedup log
+           makes catch-up safe); a few minutes late beats never */
+        if (f.at >= now + WINDOW || f.at <= now - CATCHUP) continue;
         const key = `${row.user_id}_${item.key}_${f.kind}`;
         const logged = await sql`INSERT INTO planner_notif_log (key) VALUES (${key}) ON CONFLICT (key) DO NOTHING RETURNING key`;
         if (!logged[0]) continue; /* another run already sent it */
