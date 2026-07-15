@@ -14,8 +14,11 @@ function vapid() {
   const pub = (process.env.VAPID_PUBLIC_KEY || "").trim();
   const priv = (process.env.VAPID_PRIVATE_KEY || "").trim();
   let subj = (process.env.VAPID_SUBJECT || "").trim();
-  /* Apple's push service returns 403 BadJwtToken for a bare email — the
-     spec requires a mailto: or https: subject */
+  /* Apple's push service returns 403 BadJwtToken for a malformed subject.
+     Accept the common broken formats and canonicalise: strip angle brackets
+     and ALL whitespace ("mailto: <a@b.c>" -> "mailto:a@b.c"), then ensure a
+     mailto:/https: scheme */
+  subj = subj.replace(/[<>]/g, "").replace(/\s+/g, "");
   if (subj && !/^(mailto:|https:)/i.test(subj)) subj = `mailto:${subj}`;
   return { pub, priv, subj, complete: !!(pub && priv && subj) };
 }
