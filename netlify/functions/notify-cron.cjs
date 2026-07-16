@@ -41,9 +41,21 @@ exports.handler = async () => {
     FROM planner_upcoming u JOIN planner_push p ON p.user_id = u.user_id
     WHERE u.updated_at > now() - interval '3 days'`;
 
-  let sent = 0;
+  /* group by user: the dedup key is claimed once per FIRE, so the send must
+     then go to EVERY device. The old shape iterated joined rows directly —
+     the first endpoint claimed the key and all other devices were skipped,
+     which is exactly "14 sent, none received" with a stale sub joined first. */
+  const users = new Map();
   for (const row of rows) {
-    for (const item of row.data || []) {
+    let u = users.get(row.user_id);
+    if (!u) { u = { data: row.data, subs: [] }; users.set(row.user_id, u); }
+    u.subs.push({ endpoint: row.endpoint, sub: row.sub });
+  }
+
+  let sent = 0;
+  const errors = [];
+  for (const [userId, u] of users) {
+    for (const item of u.data || []) {
       const fires = [
         { kind: "now", at: item.startUtcMs, body: "starting now" },
         { kind: "lead", at: item.startUtcMs - 3600e3, body: "in 1 hour" },
@@ -52,20 +64,24 @@ exports.handler = async () => {
         /* due = inside the upcoming window, or recently missed (dedup log
            makes catch-up safe); a few minutes late beats never */
         if (f.at >= now + WINDOW || f.at <= now - CATCHUP) continue;
-        const key = `${row.user_id}_${item.key}_${f.kind}`;
+        const key = `${userId}_${item.key}_${f.kind}`;
         const logged = await sql`INSERT INTO planner_notif_log (key) VALUES (${key}) ON CONFLICT (key) DO NOTHING RETURNING key`;
-        if (!logged[0]) continue; /* another run already sent it */
-        try {
-          await webpush.sendNotification(row.sub, JSON.stringify({ title: item.title, body: f.body, tag: key }));
-          sent++;
-        } catch (err) {
-          if (err.statusCode === 404 || err.statusCode === 410) {
-            await sql`DELETE FROM planner_push WHERE endpoint = ${row.endpoint}`;
+        if (!logged[0]) continue; /* another run already claimed it */
+        for (const d of u.subs) {
+          try {
+            await webpush.sendNotification(d.sub, JSON.stringify({ title: item.title, body: f.body, tag: key }));
+            sent++;
+          } catch (err) {
+            errors.push(`${err.statusCode || ""} ${err.body ? String(err.body).slice(0, 120) : err.message}`.trim());
+            if (err.statusCode === 404 || err.statusCode === 410) {
+              await sql`DELETE FROM planner_push WHERE endpoint = ${d.endpoint}`;
+            }
           }
         }
       }
     }
   }
   await sql`DELETE FROM planner_notif_log WHERE sent_at < now() - interval '14 days'`;
-  return { statusCode: 200, body: `sent ${sent}` };
+  /* the body lands in the function logs — errors are no longer invisible */
+  return { statusCode: 200, body: `sent ${sent}${errors.length ? ` · errors: ${errors.join(" | ").slice(0, 500)}` : ""}` };
 };
